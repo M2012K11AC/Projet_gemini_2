@@ -18,19 +18,20 @@
     </div>
 
     <div class="container">
+        <div id="connection-status-banner" class="status-banner" style="display:none;"></div>
         <form id="wifiConfigForm">
             <fieldset>
                 <legend data-translate="wifi_config">WiFi 配置</legend>
                 <label for="wifiSSID" data-translate="wifi_ssid">WiFi名称 (SSID):</label>
                 <input type="text" id="wifiSSID" name="wifiSSID" required>
                 <div id="ssid-list-container" style="margin-bottom: 10px;">
-                    </div>
+                    <!-- WiFi 扫描结果将在此处填充 -->
+                </div>
                 <button type="button" id="scanWifiButton" class="scan-button" data-translate="scan_wifi">扫描WiFi网络</button>
                 <div id="scan-status" class="scan-status-text"></div>
 
-
                 <label for="wifiPassword" data-translate="wifi_password">WiFi密码:</label>
-                <input type="text" id="wifiPassword" name="wifiPassword">
+                <input type="text" id="wifiPassword" name="wifiPassword"> <!-- 改为text以方便查看，实际应用可改回password -->
 
                 <button type="button" id="connectWifiButton" data-translate="connect_wifi">连接WiFi</button>
                 <div id="connect-wifi-status" class="status-text"></div>
@@ -65,21 +66,46 @@
                     </div>
                 </div>
 
-                <label data-translate="gas_threshold">气体浓度 (PPM):</label>
+                <label data-translate="gas_co_threshold">CO (PPM):</label>
                 <div class="threshold-group">
-                     <div>
-                        <label for="gasMin" data-translate="min_val">最小值:</label>
-                        <input type="number" step="1" id="gasMin" name="gasMin" value="0" required>
-                     </div>
-                    <div>
-                        <label for="gasMax" data-translate="max_val">最大值:</label>
-                        <input type="number" step="1" id="gasMax" name="gasMax" required>
-                    </div>
+                     <div><label for="coMin" data-translate="min_val">最小值:</label><input type="number" step="0.1" id="coMin" name="coMin" required></div>
+                    <div><label for="coMax" data-translate="max_val">最大值:</label><input type="number" step="0.1" id="coMax" name="coMax" required></div>
                 </div>
+                <label data-translate="gas_no2_threshold">NO2 (PPM):</label>
+                <div class="threshold-group">
+                     <div><label for="no2Min" data-translate="min_val">最小值:</label><input type="number" step="0.01" id="no2Min" name="no2Min" required></div>
+                    <div><label for="no2Max" data-translate="max_val">最大值:</label><input type="number" step="0.01" id="no2Max" name="no2Max" required></div>
+                </div>
+                <label data-translate="gas_c2h5oh_threshold">C2H5OH (PPM):</label>
+                <div class="threshold-group">
+                     <div><label for="c2h5ohMin" data-translate="min_val">最小值:</label><input type="number" step="0.1" id="c2h5ohMin" name="c2h5ohMin" required></div>
+                    <div><label for="c2h5ohMax" data-translate="max_val">最大值:</label><input type="number" step="0.1" id="c2h5ohMax" name="c2h5ohMax" required></div>
+                </div>
+                <label data-translate="gas_voc_threshold">VOC (PPM):</label>
+                <div class="threshold-group">
+                     <div><label for="vocMin" data-translate="min_val">最小值:</label><input type="number" step="0.1" id="vocMin" name="vocMin" required></div>
+                    <div><label for="vocMax" data-translate="max_val">最大值:</label><input type="number" step="0.1" id="vocMax" name="vocMax" required></div>
+                </div>
+
                  <div class="button-group">
                     <button type="button" id="saveThresholdsButton" data-translate="save_settings">保存阈值</button>
                  </div>
                 <div id="save-settings-status" class="status-text"></div>
+            </fieldset>
+        </form>
+
+        <form id="ledSettingsForm">
+            <fieldset>
+                <legend data-translate="led_settings">LED 设置</legend>
+                <label for="ledBrightness" data-translate="led_brightness">RGB LED 亮度 (%):</label>
+                <div class="slider-container">
+                    <input type="range" min="0" max="100" value="50" id="ledBrightness" name="ledBrightness">
+                    <span id="ledBrightnessValue">50%</span>
+                </div>
+                <div class="button-group">
+                    <button type="button" id="saveLedBrightnessButton" data-translate="save_led_brightness">保存亮度</button>
+                </div>
+                <div id="save-led-status" class="status-text"></div>
             </fieldset>
         </form>
         

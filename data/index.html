@@ -19,8 +19,10 @@
     </div>
 
     <div class="container">
+        <div id="connection-status-banner" class="status-banner" style="display:none;"></div>
         <h2 data-translate="current_values">当前数值</h2>
         <div class="sensor-grid">
+            <!-- 温度 -->
             <div class="sensor-card">
                 <div class="sensor-header">
                     <span class="sensor-label" data-translate="temperature">温度</span>
@@ -28,6 +30,7 @@
                 </div>
                 <span class="sensor-value" id="tempVal">--</span><span class="unit" data-translate="unit_celsius">&deg;C</span>
             </div>
+            <!-- 湿度 -->
             <div class="sensor-card">
                 <div class="sensor-header">
                     <span class="sensor-label" data-translate="humidity">湿度</span>
@@ -35,17 +38,42 @@
                 </div>
                 <span class="sensor-value" id="humVal">--</span><span class="unit" data-translate="unit_percent">%</span>
             </div>
+            <!-- CO -->
             <div class="sensor-card">
                 <div class="sensor-header">
-                    <span class="sensor-label" data-translate="gas_level">气体浓度</span>
-                    <span class="status-indicator" id="gas-status-indicator"></span>
+                    <span class="sensor-label" data-translate="gas_co">CO</span>
+                    <span class="status-indicator" id="gasCo-status-indicator"></span>
                 </div>
-                <span class="sensor-value" id="gasVal">--</span><span class="unit" data-translate="unit_ppm">PPM</span>
-                 </div>
+                <span class="sensor-value" id="coVal">--</span><span class="unit" data-translate="unit_ppm">PPM</span>
+            </div>
+            <!-- NO2 -->
+            <div class="sensor-card">
+                <div class="sensor-header">
+                    <span class="sensor-label" data-translate="gas_no2">NO2</span>
+                    <span class="status-indicator" id="gasNo2-status-indicator"></span>
+                </div>
+                <span class="sensor-value" id="no2Val">--</span><span class="unit" data-translate="unit_ppm">PPM</span>
+            </div>
+            <!-- C2H5OH -->
+            <div class="sensor-card">
+                <div class="sensor-header">
+                    <span class="sensor-label" data-translate="gas_c2h5oh">C2H5OH</span>
+                    <span class="status-indicator" id="gasC2h5oh-status-indicator"></span>
+                </div>
+                <span class="sensor-value" id="c2h5ohVal">--</span><span class="unit" data-translate="unit_ppm">PPM</span>
+            </div>
+            <!-- VOC -->
+            <div class="sensor-card">
+                <div class="sensor-header">
+                    <span class="sensor-label" data-translate="gas_voc">VOC</span>
+                    <span class="status-indicator" id="gasVoc-status-indicator"></span>
+                </div>
+                <span class="sensor-value" id="vocVal">--</span><span class="unit" data-translate="unit_ppm">PPM</span>
+            </div>
         </div>
 
         <div class="chart-container-wrapper">
-            <h2 data-translate="historical_data">历史数据 (最近3分钟)</h2>
+            <h2 data-translate="historical_data">历史数据</h2>
             <div class="chart-container">
                 <canvas id="sensorDataChart"></canvas>
             </div>
