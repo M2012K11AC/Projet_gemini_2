@@ -1,0 +1,97 @@
+<!DOCTYPE HTML>
+<html lang="zh">
+<head>
+    <title data-translate="settings_title">设置 - ESP32 环境监测器</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <link rel="stylesheet" href="style.css">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>⚙️</text></svg>">
+</head>
+<body>
+    <div class="navbar">
+        <h1 data-translate="settings_title">设置</h1>
+        <div class="nav-controls">
+            <button id="lang-zh" class="lang-button active" data-lang="zh">中文</button>
+            <button id="lang-fr" class="lang-button" data-lang="fr">FR</button>
+            <a href="/" class="home-icon nav-icon" title="主页" data-translate-title="nav_home">&#8962;</a>
+        </div>
+    </div>
+
+    <div class="container">
+        <form id="wifiConfigForm">
+            <fieldset>
+                <legend data-translate="wifi_config">WiFi 配置</legend>
+                <label for="wifiSSID" data-translate="wifi_ssid">WiFi名称 (SSID):</label>
+                <input type="text" id="wifiSSID" name="wifiSSID" required>
+                <div id="ssid-list-container" style="margin-bottom: 10px;">
+                    </div>
+                <button type="button" id="scanWifiButton" class="scan-button" data-translate="scan_wifi">扫描WiFi网络</button>
+                <div id="scan-status" class="scan-status-text"></div>
+
+
+                <label for="wifiPassword" data-translate="wifi_password">WiFi密码:</label>
+                <input type="text" id="wifiPassword" name="wifiPassword">
+
+                <button type="button" id="connectWifiButton" data-translate="connect_wifi">连接WiFi</button>
+                <div id="connect-wifi-status" class="status-text"></div>
+            </fieldset>
+        </form>
+
+        <form id="thresholdSettingsForm">
+            <fieldset>
+                <legend data-translate="alarm_thresholds">报警阈值设置</legend>
+
+                <label data-translate="temp_threshold">温度 (°C):</label>
+                <div class="threshold-group">
+                    <div>
+                        <label for="tempMin" data-translate="min_val">最小值:</label>
+                        <input type="number" step="0.1" id="tempMin" name="tempMin" required>
+                    </div>
+                    <div>
+                        <label for="tempMax" data-translate="max_val">最大值:</label>
+                        <input type="number" step="0.1" id="tempMax" name="tempMax" required>
+                    </div>
+                </div>
+
+                <label data-translate="hum_threshold">湿度 (%):</label>
+                <div class="threshold-group">
+                    <div>
+                        <label for="humMin" data-translate="min_val">最小值:</label>
+                        <input type="number" step="0.1" id="humMin" name="humMin" required>
+                    </div>
+                    <div>
+                        <label for="humMax" data-translate="max_val">最大值:</label>
+                        <input type="number" step="0.1" id="humMax" name="humMax" required>
+                    </div>
+                </div>
+
+                <label data-translate="gas_threshold">气体浓度 (PPM):</label>
+                <div class="threshold-group">
+                     <div>
+                        <label for="gasMin" data-translate="min_val">最小值:</label>
+                        <input type="number" step="1" id="gasMin" name="gasMin" value="0" required>
+                     </div>
+                    <div>
+                        <label for="gasMax" data-translate="max_val">最大值:</label>
+                        <input type="number" step="1" id="gasMax" name="gasMax" required>
+                    </div>
+                </div>
+                 <div class="button-group">
+                    <button type="button" id="saveThresholdsButton" data-translate="save_settings">保存阈值</button>
+                 </div>
+                <div id="save-settings-status" class="status-text"></div>
+            </fieldset>
+        </form>
+        
+        <div class="button-group bottom-buttons">
+             <a href="/" class="button-link" data-translate="return_to_home">返回主页</a>
+        </div>
+        <div class="button-group bottom-buttons" style="margin-top: 15px;">
+            <button type="button" id="resetSettingsButton" class="danger-button" data-translate="reset_all_settings">重置所有设置</button>
+        </div>
+        <div id="reset-status" class="status-text"></div>
+
+    </div>
+    <script src="script.js"></script>
+</body>
+</html>

@@ -1,0 +1,64 @@
+<!DOCTYPE HTML>
+<html lang="zh">
+<head>
+    <title data-translate="title">ESP32 环境监测器</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <link rel="stylesheet" href="style.css">
+    <script src="chart.min.js"></script>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🌡️</text></svg>">
+</head>
+<body>
+    <div class="navbar">
+        <h1 data-translate="title">ESP32 环境监测器</h1>
+        <div class="nav-controls">
+            <button id="lang-zh" class="lang-button active" data-lang="zh">中文</button>
+            <button id="lang-fr" class="lang-button" data-lang="fr">FR</button>
+            <a href="/settings.html" class="settings-icon nav-icon" title="设置" data-translate-title="nav_settings">&#9881;</a>
+        </div>
+    </div>
+
+    <div class="container">
+        <h2 data-translate="current_values">当前数值</h2>
+        <div class="sensor-grid">
+            <div class="sensor-card">
+                <div class="sensor-header">
+                    <span class="sensor-label" data-translate="temperature">温度</span>
+                    <span class="status-indicator" id="temp-status-indicator"></span>
+                </div>
+                <span class="sensor-value" id="tempVal">--</span><span class="unit" data-translate="unit_celsius">&deg;C</span>
+            </div>
+            <div class="sensor-card">
+                <div class="sensor-header">
+                    <span class="sensor-label" data-translate="humidity">湿度</span>
+                    <span class="status-indicator" id="hum-status-indicator"></span>
+                </div>
+                <span class="sensor-value" id="humVal">--</span><span class="unit" data-translate="unit_percent">%</span>
+            </div>
+            <div class="sensor-card">
+                <div class="sensor-header">
+                    <span class="sensor-label" data-translate="gas_level">气体浓度</span>
+                    <span class="status-indicator" id="gas-status-indicator"></span>
+                </div>
+                <span class="sensor-value" id="gasVal">--</span><span class="unit" data-translate="unit_ppm">PPM</span>
+                 </div>
+        </div>
+
+        <div class="chart-container-wrapper">
+            <h2 data-translate="historical_data">历史数据 (最近3分钟)</h2>
+            <div class="chart-container">
+                <canvas id="sensorDataChart"></canvas>
+            </div>
+        </div>
+
+        <div class="status-card">
+            <h3 data-translate="wifi_status">WiFi 状态</h3>
+            <p><span data-translate="status">状态:</span> <span id="wifiStatusText" data-translate="wifi_disconnected">未连接</span></p>
+            <p>SSID: <span id="wifiSSIDText">N/A</span></p>
+            <p><span data-translate="ip_address">IP 地址:</span> <span id="wifiIPText">N/A</span></p>
+        </div>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+</html>
