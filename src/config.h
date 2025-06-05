@@ -16,6 +16,9 @@
 #define NTP_SERVER2 "time.nist.gov"
 #define GMT_OFFSET_SEC 3600 * 8     // 时区偏移量 (例如 GMT+8 为 3600 * 8)
 #define DAYLIGHT_OFFSET_SEC 0       // 夏令时偏移量 (秒)
+#define MAX_NTP_ATTEMPTS_AFTER_WIFI 5 // WiFi连接后NTP的最大尝试次数
+#define NTP_RETRY_DELAY_MS 10000      // WiFi连接后NTP失败的重试间隔
+#define NTP_SYNC_INTERVAL_MS 3600000UL // NTP每小时同步间隔 (毫秒) <--- 添加UL后缀确保为无符号长整型
 
 // ==========================================================================
 // == I2C 引脚定义 (ESP32-S3 DevKitM-1 默认 Wire) ==
@@ -78,7 +81,7 @@
 // ==========================================================================
 #define SENSOR_READ_INTERVAL_MS 2000       // 传感器读取间隔 (毫秒)
 #define WEBSOCKET_UPDATE_INTERVAL_MS 2000  // WebSocket 数据更新间隔 (毫秒)
-#define HISTORICAL_DATA_SAVE_INTERVAL_MS 300000 // 历史数据保存到SPIFFS的间隔 (5分钟)
+#define HISTORICAL_DATA_SAVE_INTERVAL_MS 300000UL // 历史数据保存到SPIFFS的间隔 (5分钟)
 #define HISTORICAL_DATA_POINTS 90          // 存储的历史数据点数量 (例如 90个点 * 2秒/点 = 3分钟数据)
 
 // ==========================================================================

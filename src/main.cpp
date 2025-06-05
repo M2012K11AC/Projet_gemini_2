@@ -15,9 +15,10 @@
 #include <Wire.h>                   // I2C 通信库
 #include <map>                      // 用于 WebSocket action 映射
 #include <functional>               // 用于 std::function
+#include <time.h>                   // 用于NTP时间处理
 
 // == 自定义配置文件 ==
-#include "config.h"
+#include "config.h" // NTP_SYNC_INTERVAL_MS 将从此文件引入
 
 // == 数据结构与状态管理 ==
 
@@ -201,54 +202,46 @@ CircularBuffer historicalData(HISTORICAL_DATA_POINTS);
 unsigned long lastSensorReadTime = 0;
 unsigned long lastWebSocketUpdateTime = 0;
 unsigned long lastHistoricalDataSaveTime = 0;
-unsigned long lastNtpSyncTime = 0;
-const unsigned long NTP_SYNC_INTERVAL_MS = 3600000;
-bool ntpSynced = false;
 
-unsigned long gasSensorWarmupEndTime = 0; // 气体传感器预热结束时间点
+// NTP 相关状态
+unsigned long lastNtpSyncTime = 0;
+bool ntpSynced = false;
+int ntpInitialAttempts = 0; 
+unsigned long lastNtpAttemptTime = 0; 
+
+unsigned long gasSensorWarmupEndTime = 0; 
 
 // WebSocket action 处理函数映射
 typedef std::function<void(uint8_t, const JsonDocument&, JsonDocument&)> WebSocketActionHandler;
 std::map<String, WebSocketActionHandler> wsActionHandlers;
 
 // ==========================================================================
-// == 函数声明 (保持不变) ==
+// == 函数声明 ==
 // ==========================================================================
-// 初始化相关
 void initHardware();
 void initSPIFFS();
 void initWiFi(DeviceConfig& config, WifiState& wifiStatus);
-void initNTP();
+void attemptNtpSync(); 
 void configureWebServer();
 void setupWebSocketActions();
-
-// 数据加载/保存
 void loadConfig(DeviceConfig& config);
 void saveConfig(const DeviceConfig& config);
 void loadHistoricalDataFromFile(CircularBuffer& histBuffer);
 void saveHistoricalDataToFile(const CircularBuffer& histBuffer);
 void resetAllSettingsToDefault(DeviceConfig& config);
-
-// WiFi 处理
 void processWiFiConnection(WifiState& wifiStatus, DeviceConfig& config);
 void startWifiScan(uint8_t clientNum, WifiState& wifiStatus, JsonDocument& responseDoc);
 void processWifiScanResults(WifiState& wifiStatus);
-
-// 传感器处理
 void readSensors(DeviceState& state);
 void checkAlarms(DeviceState& state, const DeviceConfig& config);
 void updateLedStatus(const DeviceState& state, const WifiState& wifiStatus, const Adafruit_NeoPixel& led);
 void controlBuzzer(DeviceState& state);
-
-// WebSocket 通信
 void onWebSocketEvent(uint8_t clientNum, WStype_t type, uint8_t * payload, size_t length);
 void handleWebSocketMessage(uint8_t clientNum, const JsonDocument& doc, JsonDocument& responseDoc);
 void sendSensorDataToClients(const DeviceState& state, uint8_t specificClientNum = 255);
 void sendWifiStatusToClients(const WifiState& wifiStatus, uint8_t specificClientNum = 255);
 void sendHistoricalDataToClient(uint8_t clientNum, const CircularBuffer& histBuffer);
 void sendCurrentSettingsToClient(uint8_t clientNum, const DeviceConfig& config);
-
-// WebSocket Action 处理函数
 void handleGetCurrentSettingsRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response);
 void handleGetHistoricalDataRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response);
 void handleSaveThresholdsRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response);
@@ -256,8 +249,6 @@ void handleSaveLedBrightnessRequest(uint8_t clientNum, const JsonDocument& reque
 void handleScanWifiRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response);
 void handleConnectWifiRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response);
 void handleResetSettingsRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response);
-
-// 工具函数
 void generateTimeStr(unsigned long current_timestamp, char* buffer);
 void addHistoricalDataPoint(CircularBuffer& histBuffer, const DeviceState& state);
 void serveStaticFile(AsyncWebServerRequest *request, const char* path, const char* contentType);
@@ -282,7 +273,9 @@ void setup() {
     loadHistoricalDataFromFile(historicalData);
     
     initWiFi(currentConfig, wifiState);
-    initNTP();
+    
+    P_PRINTLN("[NTP] 初始配置NTP...");
+    configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER1, NTP_SERVER2);
 
     configureWebServer();
     server.begin();
@@ -299,7 +292,7 @@ void setup() {
 }
 
 // ==========================================================================
-// == Arduino `loop()` 函数 (保持不变) ==
+// == Arduino `loop()` 函数 ==
 // ==========================================================================
 void loop() {
     webSocket.loop(); 
@@ -307,6 +300,18 @@ void loop() {
     processWifiScanResults(wifiState); 
 
     unsigned long currentTime = millis();
+
+    if (WiFi.isConnected() && !ntpSynced && ntpInitialAttempts < MAX_NTP_ATTEMPTS_AFTER_WIFI) {
+        if (currentTime - lastNtpAttemptTime >= NTP_RETRY_DELAY_MS || lastNtpAttemptTime == 0) {
+            attemptNtpSync();
+            lastNtpAttemptTime = currentTime;
+        }
+    }
+    if (ntpSynced && (currentTime - lastNtpSyncTime >= NTP_SYNC_INTERVAL_MS)) { // NTP_SYNC_INTERVAL_MS is now a macro
+        P_PRINTLN("[NTP] 尝试每小时重新同步时间...");
+        attemptNtpSync(); 
+    }
+
 
     if (currentTime - lastSensorReadTime >= SENSOR_READ_INTERVAL_MS) {
         lastSensorReadTime = currentTime;
@@ -333,12 +338,6 @@ void loop() {
     if (currentTime - lastHistoricalDataSaveTime >= HISTORICAL_DATA_SAVE_INTERVAL_MS) {
         lastHistoricalDataSaveTime = currentTime;
         saveHistoricalDataToFile(historicalData);
-    }
-
-    if (ntpSynced && (currentTime - lastNtpSyncTime >= NTP_SYNC_INTERVAL_MS)) {
-        P_PRINTLN("[NTP] 尝试重新同步时间...");
-        configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER1, NTP_SERVER2);
-        lastNtpSyncTime = currentTime;
     }
 }
 
@@ -385,22 +384,36 @@ void initSPIFFS() {
     }
 }
 
-void initNTP() {
-    P_PRINTLN("[NTP] 配置NTP...");
-    configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER1, NTP_SERVER2);
+void attemptNtpSync() { // Renamed from initNTP to reflect its purpose
+    if (ntpSynced && millis() - lastNtpSyncTime < NTP_SYNC_INTERVAL_MS && ntpInitialAttempts >= MAX_NTP_ATTEMPTS_AFTER_WIFI) {
+        return;
+    }
+    if (!WiFi.isConnected()) {
+        P_PRINTLN("[NTP] WiFi未连接, 无法同步时间.");
+        ntpSynced = false; 
+        return;
+    }
+
+    P_PRINTF("[NTP] 尝试同步时间 (尝试次数: %d/%d)...\n", ntpInitialAttempts + 1, MAX_NTP_ATTEMPTS_AFTER_WIFI);
+    configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER1, NTP_SERVER2); 
     
     struct tm timeinfo;
     if(!getLocalTime(&timeinfo, 5000)){ 
-        P_PRINTLN("[NTP] 首次获取时间失败, 将在WiFi连接后重试.");
+        P_PRINTLN("[NTP] 获取时间失败.");
         ntpSynced = false;
+        if (WiFi.isConnected()) { 
+             ntpInitialAttempts++;
+        }
     } else {
         char timeBuffer[80];
         strftime(timeBuffer, sizeof(timeBuffer), "%A, %B %d %Y %H:%M:%S", &timeinfo);
         P_PRINTF("[NTP] 时间已同步: %s\n", timeBuffer);
         ntpSynced = true;
         lastNtpSyncTime = millis();
+        ntpInitialAttempts = MAX_NTP_ATTEMPTS_AFTER_WIFI; 
     }
 }
+
 
 void loadConfig(DeviceConfig& config) {
     P_PRINTLN("[CONFIG] 正在加载配置...");
@@ -567,9 +580,6 @@ void initWiFi(DeviceConfig& config, WifiState& wifiStatus) {
 
 void processWiFiConnection(WifiState& wifiStatus, DeviceConfig& config) {
     if (wifiStatus.connectProgress == WIFI_CP_IDLE || wifiStatus.connectProgress == WIFI_CP_FAILED) {
-        if (!WiFi.isConnected() && !ntpSynced && millis() > 10000) { 
-             initNTP(); 
-        }
         return;
     }
 
@@ -597,9 +607,8 @@ void processWiFiConnection(WifiState& wifiStatus, DeviceConfig& config) {
             responseDoc["ip"] = WiFi.localIP().toString();
             wifiStatus.connectProgress = WIFI_CP_IDLE;
             
-            if (!ntpSynced) {
-                initNTP();
-            }
+            ntpInitialAttempts = 0; // WiFi连接成功，重置NTP尝试计数
+            lastNtpAttemptTime = 0;   // 允许立即在loop中尝试NTP同步
 
         } else if (millis() - wifiStatus.connectAttemptStartTime > 20000) { 
             P_PRINTF("[WIFI_PROC] 连接超时: SSID=%s. WiFi Status: %d\n", wifiStatus.ssidToTry.c_str(), status);
@@ -745,20 +754,15 @@ void readSensors(DeviceState& state) {
         state.gasValues.no2 = (float)raw_no2;
         state.gasValues.c2h5oh = (float)raw_c2h5oh;
         state.gasValues.voc = (float)raw_voc;
-
-        // 如果I2C读取失败 (例如串口持续打印 "i2cRead returned Error -1")
-        // 库的 measure_XX 方法可能会返回0或一些无效值。
-        // 一个简单的检查是看所有值是否都为0（在预热后），这可能表明通信问题。
+        
         bool allGasZeroAfterWarmup = !isGasSensorPhysicallyWarmingUp && 
                                      raw_co == 0 && raw_no2 == 0 && 
                                      raw_c2h5oh == 0 && raw_voc == 0;
         
-        // 或者检查ADC值是否超出预期范围 (GMXXX通常是1023)
         bool outOfRange = raw_co > GAS_SENSOR_ADC_MAX_VALID || raw_no2 > GAS_SENSOR_ADC_MAX_VALID ||
                           raw_c2h5oh > GAS_SENSOR_ADC_MAX_VALID || raw_voc > GAS_SENSOR_ADC_MAX_VALID;
 
         if (allGasZeroAfterWarmup || outOfRange) {
-            // 如果串口有I2C错误日志，这里可以更确信是通信问题
             P_PRINTLN("[SENSOR] 气体传感器读数可能无效 (全0或超范围)，检查I2C连接。");
             state.gasCoStatus = SS_DISCONNECTED;
             state.gasNo2Status = SS_DISCONNECTED;

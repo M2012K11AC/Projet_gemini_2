@@ -12,19 +12,20 @@ let no2Data = [];
 let c2h5ohData = [];
 let vocData = [];
 
-let wsReconnectInterval = 2000; // WebSocket重连间隔 (ms)
+let wsReconnectInterval = 3000; // WebSocket重连间隔 (ms)，稍作增加
 let wsMaxReconnectAttempts = 5;
 let wsReconnectAttempts = 0;
+let currentWsStatusKey = ''; // 用于存储当前WebSocket状态的翻译键
+let statusBannerTimeout; // 用于控制状态横幅的显示超时
 
 
 // DOMContentLoaded 事件监听器，确保DOM加载完毕后执行脚本
 document.addEventListener('DOMContentLoaded', () => {
     loadTranslations().then(() => {
-        applyTranslations(currentLang);
+        applyTranslations(currentLang); 
         initPage();
     });
 
-    // 语言切换按钮事件
     document.getElementById('lang-zh')?.addEventListener('click', () => setLanguage('zh'));
     document.getElementById('lang-fr')?.addEventListener('click', () => setLanguage('fr'));
 });
@@ -46,8 +47,38 @@ async function loadTranslations() {
 }
 
 /**
+ * 更新连接状态横幅的文本和样式
+ */
+function updateConnectionBanner(statusKey, bannerClass, autoHide = false, dynamicParts = null) {
+    const statusBanner = document.getElementById('connection-status-banner');
+    currentWsStatusKey = statusKey; 
+
+    if (statusBanner) {
+        let message = translations[currentLang]?.[statusKey] || statusKey.replace(/_/g, ' ');
+        if (dynamicParts) {
+            for (const key in dynamicParts) {
+                message = message.replace(`{${key}}`, dynamicParts[key]);
+            }
+        }
+        statusBanner.textContent = message;
+        statusBanner.className = `status-banner ${bannerClass}`;
+        statusBanner.style.display = 'block';
+
+        if (statusBannerTimeout) {
+            clearTimeout(statusBannerTimeout);
+        }
+        if (autoHide) {
+            statusBannerTimeout = setTimeout(() => {
+                statusBanner.style.display = 'none';
+                currentWsStatusKey = ''; 
+            }, 3000); 
+        }
+    }
+}
+
+
+/**
  * 应用翻译到页面元素
- * @param {string} lang - 目标语言 ('zh' 或 'fr')
  */
 function applyTranslations(lang) {
     document.documentElement.lang = lang;
@@ -75,14 +106,13 @@ function applyTranslations(lang) {
         }
     });
 
-    // 更新图表标签翻译
     if (sensorChart && translations[lang]) {
         sensorChart.data.datasets[0].label = translations[lang].chart_temperature_label || 'Temperature (°C)';
         sensorChart.data.datasets[1].label = translations[lang].chart_humidity_label || 'Humidity (%)';
-        sensorChart.data.datasets[2].label = translations[lang].chart_co_label || 'CO (PPM)';
-        sensorChart.data.datasets[3].label = translations[lang].chart_no2_label || 'NO2 (PPM)';
-        sensorChart.data.datasets[4].label = translations[lang].chart_c2h5oh_label || 'C2H5OH (PPM)';
-        sensorChart.data.datasets[5].label = translations[lang].chart_voc_label || 'VOC (PPM)';
+        sensorChart.data.datasets[2].label = translations[lang].chart_co_label || 'CO (ADC)'; 
+        sensorChart.data.datasets[3].label = translations[lang].chart_no2_label || 'NO2 (ADC)'; 
+        sensorChart.data.datasets[4].label = translations[lang].chart_c2h5oh_label || 'C2H5OH (ADC)'; 
+        sensorChart.data.datasets[5].label = translations[lang].chart_voc_label || 'VOC (ADC)'; 
         
         if (sensorChart.options.scales.yTemp && sensorChart.options.scales.yTemp.title) {
             sensorChart.options.scales.yTemp.title.text = translations[lang].unit_celsius || '°C';
@@ -91,9 +121,17 @@ function applyTranslations(lang) {
             sensorChart.options.scales.yHum.title.text = translations[lang].unit_percent || '%';
         }
         if (sensorChart.options.scales.yGas && sensorChart.options.scales.yGas.title) {
-             sensorChart.options.scales.yGas.title.text = translations[lang].unit_ppm || 'PPM';
+             sensorChart.options.scales.yGas.title.text = translations[lang].unit_adc || 'ADC Value'; 
         }
         sensorChart.update('none'); 
+    }
+    const statusBanner = document.getElementById('connection-status-banner');
+    if (statusBanner && statusBanner.style.display === 'block' && currentWsStatusKey) {
+        let message = translations[currentLang]?.[currentWsStatusKey] || currentWsStatusKey.replace(/_/g, ' ');
+         if (currentWsStatusKey === 'ws_disconnected_retry_attempt') { // 特殊处理重连尝试的动态文本
+            message = message.replace('{attempts}', wsReconnectAttempts).replace('{maxAttempts}', wsMaxReconnectAttempts);
+        }
+        statusBanner.textContent = message;
     }
 }
 
@@ -125,29 +163,18 @@ function initPage() {
  */
 function connectWebSocket() {
     const gateway = `ws://${window.location.hostname}:81/`;
-    const statusBanner = document.getElementById('connection-status-banner');
-
-    if (statusBanner) {
-        statusBanner.textContent = translations[currentLang]?.ws_connecting || '正在连接 WebSocket...';
-        statusBanner.className = 'status-banner connecting';
-        statusBanner.style.display = 'block';
-    }
+    updateConnectionBanner('ws_connecting', 'connecting');
     console.log(`Attempting to connect to WebSocket at ${gateway}`);
     websocket = new WebSocket(gateway);
 
     websocket.onopen = (event) => {
         console.log('WebSocket connection opened successfully.');
-        wsReconnectAttempts = 0; // 重置重连尝试次数
-        if (statusBanner) {
-            statusBanner.textContent = translations[currentLang]?.ws_connected || 'WebSocket 已连接';
-            statusBanner.className = 'status-banner connected';
-            setTimeout(() => { statusBanner.style.display = 'none'; }, 2000);
-        }
-        // 连接成功后请求初始数据
+        wsReconnectAttempts = 0; 
+        updateConnectionBanner('ws_connected', 'connected', true); 
+        
         if (document.getElementById('wifiConfigForm')) {
             websocket.send(JSON.stringify({ action: "getCurrentSettings" }));
         } else if (document.getElementById('sensorDataChart')) {
-            // 延迟请求历史数据，给传感器数据先到达的机会
             setTimeout(() => websocket.send(JSON.stringify({ action: "getHistoricalData" })), 500);
         }
     };
@@ -175,7 +202,7 @@ function connectWebSocket() {
                 populateSettingsForm(data.settings);
                 break;
             case 'wifiScanResults':
-                displayWifiScanResults(data); // 传递整个data对象以处理错误
+                displayWifiScanResults(data); 
                 break;
             case 'connectWifiStatus':
                 updateStatusMessage('connect-wifi-status', data.message, !data.success);
@@ -194,48 +221,33 @@ function connectWebSocket() {
                 break;
             case 'error':
                 console.error('Error message from server:', data.message);
-                updateStatusMessage('general-status', data.message, true); // 假设有general-status元素
+                updateStatusMessage('general-status', data.message, true); 
                 break;
-            case 'scanStatus': // 扫描开始的状态
+            case 'scanStatus': 
                 updateStatusMessage('scan-status', data.message, false);
                 break;
             default:
-                // console.log('Unknown WebSocket message type received:', data.type, data);
                 break;
         }
     };
 
     websocket.onclose = (event) => {
         console.log('WebSocket connection closed. Event:', event);
-        if (statusBanner) {
-            statusBanner.className = 'status-banner disconnected';
-            statusBanner.style.display = 'block';
-        }
-        updateElementText('wifiStatusText', translations[currentLang]?.ws_disconnected_retry || 'WebSocket 已断开。正在尝试重连...', 'ws_disconnected_retry');
         
         if (wsReconnectAttempts < wsMaxReconnectAttempts) {
             wsReconnectAttempts++;
-            if (statusBanner) {
-                 statusBanner.textContent = `${translations[currentLang]?.ws_disconnected_retry || 'WebSocket 已断开。正在尝试重连...'} (${wsReconnectAttempts}/${wsMaxReconnectAttempts})`;
-            }
+            updateConnectionBanner('ws_disconnected_retry_attempt', 'disconnected', false, { attempts: wsReconnectAttempts, maxAttempts: wsMaxReconnectAttempts });
             console.log(`WebSocket closed. Reconnecting in ${wsReconnectInterval / 1000}s (attempt ${wsReconnectAttempts}/${wsMaxReconnectAttempts})`);
             setTimeout(connectWebSocket, wsReconnectInterval);
         } else {
-            if (statusBanner) {
-                statusBanner.textContent = translations[currentLang]?.ws_reconnect_failed || 'WebSocket 重连失败。请检查设备连接或刷新页面。';
-            }
+            updateConnectionBanner('ws_reconnect_failed', 'error'); 
             console.error('WebSocket reconnection failed after multiple attempts.');
         }
     };
 
     websocket.onerror = (error) => {
         console.error('WebSocket error:', error);
-        if (statusBanner) {
-            statusBanner.textContent = translations[currentLang]?.ws_error || 'WebSocket 连接错误。';
-            statusBanner.className = 'status-banner error';
-            statusBanner.style.display = 'block';
-        }
-        // onerror 之后通常会触发 onclose，所以重连逻辑主要在 onclose 中处理
+        updateConnectionBanner('ws_error', 'error'); 
     };
 }
 
@@ -258,7 +270,11 @@ function updateSensorReadings(data) {
         if (el) {
             const value = data[dataKey];
             if (value !== null && value !== undefined && !isNaN(value)) {
-                el.textContent = (dataKey === 'no2' || dataKey === 'voc') ? value.toFixed(2) : value.toFixed(1);
+                if (['co', 'no2', 'c2h5oh', 'voc'].includes(dataKey)) {
+                    el.textContent = value.toFixed(0);
+                } else {
+                     el.textContent = value.toFixed(1);
+                }
             } else {
                 el.textContent = '--';
             }
@@ -269,8 +285,8 @@ function updateSensorReadings(data) {
         updateStatusIndicator(elId, data[statusKey]);
     }
     
-    if (sensorChart && data.temperature !== null && data.humidity !== null && data.co !== null /*检查一个气体值*/) {
-        const now = new Date(); // 使用客户端时间作为图表标签，如果后端提供了精确时间戳更好
+    if (sensorChart && data.temperature !== null && data.humidity !== null && data.co !== null ) {
+        const now = new Date(); 
         const timeString = data.timeStr || now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
         addDataToChart(timeString, data.temperature, data.humidity, data.co, data.no2, data.c2h5oh, data.voc);
     }
@@ -282,11 +298,11 @@ function updateSensorReadings(data) {
 function updateStatusIndicator(elementId, status) {
     const indicator = document.getElementById(elementId);
     if (indicator) {
-        indicator.className = 'status-indicator'; // Reset classes
+        indicator.className = 'status-indicator'; 
         if (status === 'normal') indicator.classList.add('normal');
         else if (status === 'warning') indicator.classList.add('warning');
         else if (status === 'disconnected') indicator.classList.add('disconnected');
-        else if (status === 'initializing') indicator.classList.add('initializing'); // 新增预热状态
+        else if (status === 'initializing') indicator.classList.add('initializing'); 
     }
 }
 
@@ -338,22 +354,22 @@ function initChart() {
                     borderWidth: 1.5, tension: 0.3, yAxisID: 'yHum', fill: false, pointRadius: 0, pointHitRadius: 10
                 },
                 {
-                    label: translations[currentLang]?.chart_co_label || 'CO (PPM)',
+                    label: translations[currentLang]?.chart_co_label || 'CO (ADC)',
                     data: coData, borderColor: 'rgba(255, 159, 64, 1)', backgroundColor: 'rgba(255, 159, 64, 0.2)',
                     borderWidth: 1.5, tension: 0.3, yAxisID: 'yGas', fill: false, pointRadius: 0, pointHitRadius: 10
                 },
                 {
-                    label: translations[currentLang]?.chart_no2_label || 'NO2 (PPM)',
+                    label: translations[currentLang]?.chart_no2_label || 'NO2 (ADC)',
                     data: no2Data, borderColor: 'rgba(153, 102, 255, 1)', backgroundColor: 'rgba(153, 102, 255, 0.2)',
                     borderWidth: 1.5, tension: 0.3, yAxisID: 'yGas', fill: false, pointRadius: 0, pointHitRadius: 10
                 },
                 {
-                    label: translations[currentLang]?.chart_c2h5oh_label || 'C2H5OH (PPM)',
+                    label: translations[currentLang]?.chart_c2h5oh_label || 'C2H5OH (ADC)',
                     data: c2h5ohData, borderColor: 'rgba(75, 192, 192, 1)', backgroundColor: 'rgba(75, 192, 192, 0.2)',
                     borderWidth: 1.5, tension: 0.3, yAxisID: 'yGas', fill: false, pointRadius: 0, pointHitRadius: 10
                 },
                 {
-                    label: translations[currentLang]?.chart_voc_label || 'VOC (PPM)',
+                    label: translations[currentLang]?.chart_voc_label || 'VOC (ADC)',
                     data: vocData, borderColor: 'rgba(255, 205, 86, 1)', backgroundColor: 'rgba(255, 205, 86, 0.2)',
                     borderWidth: 1.5, tension: 0.3, yAxisID: 'yGas', fill: false, pointRadius: 0, pointHitRadius: 10
                 }
@@ -368,7 +384,7 @@ function initChart() {
                     grid: { display: true, color: 'rgba(200, 200, 200, 0.1)', drawBorder: false }
                 },
                 yTemp: {
-                    type: 'linear', position: 'left', min: 0, max: 50, // 动态调整或根据实际情况设定
+                    type: 'linear', position: 'left', min: 0, max: 50, 
                     title: { display: true, text: translations[currentLang]?.unit_celsius || '°C', font: { size: 11, weight: 'bold' }, padding: { top: 0, bottom: 5 } },
                     grid: { drawBorder: false, color: 'rgba(255, 99, 132, 0.15)'}, ticks: { font: { size: 10 }, color: 'rgba(255, 99, 132, 0.8)' }
                 },
@@ -377,10 +393,9 @@ function initChart() {
                     title: { display: true, text: translations[currentLang]?.unit_percent || '%', font: { size: 11, weight: 'bold' }, padding: { top: 0, bottom: 5 } },
                     grid: { drawOnChartArea: false }, ticks: { font: { size: 10 }, color: 'rgba(54, 162, 235, 0.8)' }
                 },
-                yGas: {
-                    type: 'linear', position: 'right', min: 0, // max 可以根据数据动态调整或预设一个较大值
-                    // suggestedMax: 100, // 初始建议最大值
-                    title: { display: true, text: translations[currentLang]?.unit_ppm || 'PPM', font: { size: 11, weight: 'bold' }, padding: { top: 0, bottom: 5 } },
+                yGas: { 
+                    type: 'linear', position: 'right', min: 0, suggestedMax: 1023, 
+                    title: { display: true, text: translations[currentLang]?.unit_adc || 'ADC Value', font: { size: 11, weight: 'bold' }, padding: { top: 0, bottom: 5 } },
                     grid: { drawOnChartArea: false }, ticks: { font: { size: 10 }, color: 'rgba(75, 192, 192, 0.8)' }
                 }
             },
@@ -421,7 +436,6 @@ function populateChartWithHistoricalData(history) {
         console.log("populateChartWithHistoricalData: Chart or history not ready.");
         return;
     }
-    // 清空现有数据
     chartLabels.length = 0; tempData.length = 0; humData.length = 0;
     coData.length = 0; no2Data.length = 0; c2h5ohData.length = 0; vocData.length = 0;
 
@@ -443,7 +457,6 @@ function populateChartWithHistoricalData(history) {
     sensorChart.data.datasets[4].data = c2h5ohData;
     sensorChart.data.datasets[5].data = vocData;
     
-    // 确保数据点数量不超过最大值
     while (sensorChart.data.labels.length > MAX_CHART_DATA_POINTS) {
         sensorChart.data.labels.shift();
         sensorChart.data.datasets.forEach(dataset => dataset.data.shift());
@@ -491,7 +504,7 @@ function displayWifiScanResults(data) {
     const scanStatusEl = document.getElementById('scan-status');
     if (!container || !scanStatusEl) return;
     
-    container.innerHTML = ''; // 清空旧结果
+    container.innerHTML = ''; 
     if (data.error) {
         scanStatusEl.textContent = data.error;
         scanStatusEl.style.color = 'var(--danger-color)';
@@ -507,7 +520,7 @@ function displayWifiScanResults(data) {
             button.textContent = `${net.ssid} (${net.rssi} dBm, ${net.encryption})`;
             button.onclick = () => {
                 document.getElementById('wifiSSID').value = net.ssid;
-                container.style.display = 'none'; // 选择后隐藏列表
+                container.style.display = 'none'; 
             };
             container.appendChild(button);
         });
@@ -526,7 +539,7 @@ function displayWifiScanResults(data) {
  */
 function handleConnectWifi() {
     const ssid = document.getElementById('wifiSSID')?.value.trim();
-    const password = document.getElementById('wifiPassword')?.value; // 注意：密码字段类型为text
+    const password = document.getElementById('wifiPassword')?.value; 
     if (!ssid) {
         updateStatusMessage('connect-wifi-status', translations[currentLang]?.wifi_ssid_empty || 'SSID 不能为空.', true);
         return;
@@ -559,7 +572,6 @@ function handleSaveThresholds() {
         vocMax: parseFloat(document.getElementById('vocMax')?.value),
     };
 
-    // 简单校验
     for (const key in thresholds) {
         if (key !== 'action' && isNaN(thresholds[key])) {
             updateStatusMessage('save-settings-status', translations[currentLang]?.settings_invalid_threshold || '所有阈值都必须是数字。', true); return;
@@ -645,8 +657,8 @@ function updateStatusMessage(elementId, message, isError) {
     const el = document.getElementById(elementId);
     if (el) {
         el.textContent = message;
-        el.style.color = isError ? 'var(--danger-color)' : 'var(--success-color)'; // 假设有这些CSS变量
-        setTimeout(() => { if (el.textContent === message) el.textContent = ''; }, 5000); // 5秒后清除
+        el.style.color = isError ? 'var(--danger-color)' : 'var(--success-color)'; 
+        setTimeout(() => { if (el.textContent === message) el.textContent = ''; }, 5000); 
     }
 }
 
