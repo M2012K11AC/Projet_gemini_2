@@ -307,7 +307,7 @@ void loop() {
             lastNtpAttemptTime = currentTime;
         }
     }
-    if (ntpSynced && (currentTime - lastNtpSyncTime >= NTP_SYNC_INTERVAL_MS)) { // NTP_SYNC_INTERVAL_MS is now a macro
+    if (ntpSynced && (currentTime - lastNtpSyncTime >= NTP_SYNC_INTERVAL_MS)) { 
         P_PRINTLN("[NTP] 尝试每小时重新同步时间...");
         attemptNtpSync(); 
     }
@@ -384,7 +384,7 @@ void initSPIFFS() {
     }
 }
 
-void attemptNtpSync() { // Renamed from initNTP to reflect its purpose
+void attemptNtpSync() { 
     if (ntpSynced && millis() - lastNtpSyncTime < NTP_SYNC_INTERVAL_MS && ntpInitialAttempts >= MAX_NTP_ATTEMPTS_AFTER_WIFI) {
         return;
     }
@@ -587,7 +587,7 @@ void processWiFiConnection(WifiState& wifiStatus, DeviceConfig& config) {
     responseDoc["type"] = "connectWifiStatus";
 
     if (wifiStatus.connectProgress == WIFI_CP_DISCONNECTING) {
-        if (WiFi.status() == WL_DISCONNECTED || millis() - wifiStatus.connectAttemptStartTime > 2000) { 
+        if (WiFi.status() == WL_DISCONNECTED || millis() - wifiStatus.connectAttemptStartTime > 3000) { 
             P_PRINTF("[WIFI_PROC] 已断开或超时. 尝试连接到 %s\n", wifiStatus.ssidToTry.c_str());
             WiFi.begin(wifiStatus.ssidToTry.c_str(), wifiStatus.passwordToTry.c_str());
             wifiStatus.connectProgress = WIFI_CP_CONNECTING;
@@ -607,22 +607,28 @@ void processWiFiConnection(WifiState& wifiStatus, DeviceConfig& config) {
             responseDoc["ip"] = WiFi.localIP().toString();
             wifiStatus.connectProgress = WIFI_CP_IDLE;
             
-            ntpInitialAttempts = 0; // WiFi连接成功，重置NTP尝试计数
-            lastNtpAttemptTime = 0;   // 允许立即在loop中尝试NTP同步
+            ntpInitialAttempts = 0; 
+            lastNtpAttemptTime = 0;  
 
         } else if (millis() - wifiStatus.connectAttemptStartTime > 20000) { 
-            P_PRINTF("[WIFI_PROC] 连接超时: SSID=%s. WiFi Status: %d\n", wifiStatus.ssidToTry.c_str(), status);
-            WiFi.disconnect(false); 
+            P_PRINTF("[WIFI_PROC] 连接超时: SSID=%s. WiFi Status: %s (%d)\n", 
+                wifiStatus.ssidToTry.c_str(), String(status).c_str(), status); 
+            WiFi.disconnect(true); 
             responseDoc["success"] = false;
             responseDoc["message"] = "Failed to connect to " + wifiStatus.ssidToTry + " (Timeout, Status: " + String(status) + ")";
             wifiStatus.connectProgress = WIFI_CP_FAILED;
-        } else if (status == WL_NO_SSID_AVAIL || status == WL_CONNECT_FAILED || status == WL_CONNECTION_LOST || status == WL_IDLE_STATUS ) {
-            P_PRINTF("[WIFI_PROC] 连接失败: SSID=%s. WiFi Status: %d\n", wifiStatus.ssidToTry.c_str(), status);
-            WiFi.disconnect(false); 
+        } else if (status == WL_NO_SSID_AVAIL || status == WL_CONNECT_FAILED || status == WL_CONNECTION_LOST) { 
+            P_PRINTF("[WIFI_PROC] 连接失败: SSID=%s. WiFi Status: %s (%d)\n", 
+                wifiStatus.ssidToTry.c_str(), String(status).c_str(), status);
+            WiFi.disconnect(true); 
             responseDoc["success"] = false;
             responseDoc["message"] = "Failed to connect to " + wifiStatus.ssidToTry + " (Error, Status: " + String(status) + ")";
             wifiStatus.connectProgress = WIFI_CP_FAILED;
+        } else if (status == WL_IDLE_STATUS) {
+            // 处于 WL_IDLE_STATUS 时，继续等待
+            return;
         } else {
+            // 其他状态 (如 WL_SCAN_COMPLETED), 继续等待
             return;
         }
 
@@ -743,7 +749,6 @@ void readSensors(DeviceState& state) {
         state.gasCoStatus = SS_INIT; state.gasNo2Status = SS_INIT;
         state.gasC2h5ohStatus = SS_INIT; state.gasVocStatus = SS_INIT;
         state.gasValues = {NAN, NAN, NAN, NAN}; 
-        P_PRINTLN("[SENSOR] 气体传感器物理预热中...");
     } else {
         uint32_t raw_co = gas_sensor.measure_CO();
         uint32_t raw_no2 = gas_sensor.measure_NO2();
@@ -763,7 +768,6 @@ void readSensors(DeviceState& state) {
                           raw_c2h5oh > GAS_SENSOR_ADC_MAX_VALID || raw_voc > GAS_SENSOR_ADC_MAX_VALID;
 
         if (allGasZeroAfterWarmup || outOfRange) {
-            P_PRINTLN("[SENSOR] 气体传感器读数可能无效 (全0或超范围)，检查I2C连接。");
             state.gasCoStatus = SS_DISCONNECTED;
             state.gasNo2Status = SS_DISCONNECTED;
             state.gasC2h5ohStatus = SS_DISCONNECTED;
