@@ -77,6 +77,7 @@ struct AlarmThresholds {
 struct DeviceConfig {
     AlarmThresholds thresholds;
     String currentSsidForSettings; // 用于保存到设置的SSID
+    String currentPasswordForSettings; // 新增：用于保存WiFi密码
     uint8_t ledBrightness;       // LED亮度 (0-100)
 
     DeviceConfig() : ledBrightness(DEFAULT_LED_BRIGHTNESS) {
@@ -272,7 +273,7 @@ void setup() {
 
     loadHistoricalDataFromFile(historicalData);
     
-    initWiFi(currentConfig, wifiState);
+    initWiFi(currentConfig, wifiState); 
     
     P_PRINTLN("[NTP] 初始配置NTP...");
     configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER1, NTP_SERVER2);
@@ -441,6 +442,7 @@ void loadConfig(DeviceConfig& config) {
                 config.thresholds.vocMax  = thresholdsObj["vocMax"]  | DEFAULT_VOC_MAX;
                 
                 config.currentSsidForSettings = doc["wifi"]["ssid"].as<String>();
+                config.currentPasswordForSettings = doc["wifi"]["password"].as<String>(); // 加载密码
                 config.ledBrightness = doc["led"]["brightness"] | DEFAULT_LED_BRIGHTNESS;
                 P_PRINTLN("[CONFIG] 配置加载成功.");
             }
@@ -460,6 +462,7 @@ void loadConfig(DeviceConfig& config) {
                    config.thresholds.coMin, config.thresholds.coMax, config.thresholds.no2Min, config.thresholds.no2Max,
                    config.thresholds.c2h5ohMin, config.thresholds.c2h5ohMax, config.thresholds.vocMin, config.thresholds.vocMax);
     P_PRINTF("  加载的WiFi SSID (自动连接): %s\n", config.currentSsidForSettings.c_str());
+    // 不打印密码 P_PRINTF("  加载的WiFi 密码: %s\n", config.currentPasswordForSettings.c_str());
     P_PRINTF("  加载的LED亮度: %d\n", config.ledBrightness);
 }
 
@@ -483,7 +486,24 @@ void saveConfig(const DeviceConfig& config) {
         thresholdsObj["vocMax"]  = config.thresholds.vocMax;
 
         JsonObject wifiObj = doc.createNestedObject("wifi");
-        wifiObj["ssid"] = WiFi.isConnected() ? WiFi.SSID() : config.currentSsidForSettings;
+        // 保存当前连接的SSID和密码，或者如果未连接，则保存设置中的SSID和密码
+        if (WiFi.isConnected()) {
+            wifiObj["ssid"] = WiFi.SSID();
+            // 注意：WiFi.psk() 通常不可用或不返回实际密码。我们依赖连接成功时保存的密码。
+            // 因此，只有当通过Web界面连接时，密码才会被保存。
+            // 如果是从之前保存的配置中自动连接的，我们应该使用config.currentPasswordForSettings
+            if (config.currentSsidForSettings == WiFi.SSID()) {
+                 wifiObj["password"] = config.currentPasswordForSettings;
+            } else {
+                // 如果当前连接的SSID不是上次保存的，理论上密码应该在连接时已更新到config
+                // 但为了保险，这里也用config中的。如果用户手动连接了一个新网络且未保存，则可能为空。
+                wifiObj["password"] = config.currentPasswordForSettings;
+            }
+        } else {
+            wifiObj["ssid"] = config.currentSsidForSettings;
+            wifiObj["password"] = config.currentPasswordForSettings;
+        }
+
 
         JsonObject ledObj = doc.createNestedObject("led");
         ledObj["brightness"] = config.ledBrightness;
@@ -566,15 +586,17 @@ void initWiFi(DeviceConfig& config, WifiState& wifiStatus) {
     P_PRINTF("[WIFI] AP模式已启动. SSID: %s, IP: %s\n", WIFI_AP_SSID, apIP.toString().c_str());
 
     if (config.currentSsidForSettings.length() > 0) {
-        P_PRINTF("[WIFI] 检测到保存的SSID: %s, 将在后台尝试连接...\n", config.currentSsidForSettings.c_str());
+        P_PRINTF("[WIFI] 检测到保存的SSID: %s, 密码: [敏感信息], 尝试自动连接...\n", config.currentSsidForSettings.c_str());
         wifiStatus.ssidToTry = config.currentSsidForSettings;
-        wifiStatus.passwordToTry = ""; 
+        wifiStatus.passwordToTry = config.currentPasswordForSettings; // 使用保存的密码
         wifiStatus.connectInitiatorClientNum = 255; 
-        wifiStatus.connectProgress = WIFI_CP_DISCONNECTING;
+
+        WiFi.begin(wifiStatus.ssidToTry.c_str(), wifiStatus.passwordToTry.c_str());
+        wifiStatus.connectProgress = WIFI_CP_CONNECTING;
         wifiStatus.connectAttemptStartTime = millis();
-        WiFi.disconnect(false); 
     } else {
         P_PRINTLN("[WIFI] 没有已保存的STA SSID可供自动连接.");
+        wifiStatus.connectProgress = WIFI_CP_IDLE; 
     }
 }
 
@@ -585,60 +607,69 @@ void processWiFiConnection(WifiState& wifiStatus, DeviceConfig& config) {
 
     DynamicJsonDocument responseDoc(256);
     responseDoc["type"] = "connectWifiStatus";
+    bool sendUpdateToClient = false;
+
 
     if (wifiStatus.connectProgress == WIFI_CP_DISCONNECTING) {
         if (WiFi.status() == WL_DISCONNECTED || millis() - wifiStatus.connectAttemptStartTime > 3000) { 
-            P_PRINTF("[WIFI_PROC] 已断开或超时. 尝试连接到 %s\n", wifiStatus.ssidToTry.c_str());
+            P_PRINTF("[WIFI_PROC] 已断开或超时(WIFI_CP_DISCONNECTING). 尝试连接到 %s\n", wifiStatus.ssidToTry.c_str());
             WiFi.begin(wifiStatus.ssidToTry.c_str(), wifiStatus.passwordToTry.c_str());
             wifiStatus.connectProgress = WIFI_CP_CONNECTING;
             wifiStatus.connectAttemptStartTime = millis(); 
         }
-        return;
+        return; 
     }
 
     if (wifiStatus.connectProgress == WIFI_CP_CONNECTING) {
         wl_status_t status = WiFi.status();
+
         if (status == WL_CONNECTED) {
             config.currentSsidForSettings = wifiStatus.ssidToTry; 
+            config.currentPasswordForSettings = wifiStatus.passwordToTry; // 保存密码
             saveConfig(config); 
             P_PRINTF("[WIFI_PROC] 连接成功: SSID=%s, IP=%s\n", wifiStatus.ssidToTry.c_str(), WiFi.localIP().toString().c_str());
             responseDoc["success"] = true;
             responseDoc["message"] = "WiFi connected successfully to " + wifiStatus.ssidToTry;
             responseDoc["ip"] = WiFi.localIP().toString();
             wifiStatus.connectProgress = WIFI_CP_IDLE;
+            sendUpdateToClient = true;
             
             ntpInitialAttempts = 0; 
             lastNtpAttemptTime = 0;  
 
         } else if (millis() - wifiStatus.connectAttemptStartTime > 20000) { 
-            P_PRINTF("[WIFI_PROC] 连接超时: SSID=%s. WiFi Status: %s (%d)\n", 
-                wifiStatus.ssidToTry.c_str(), String(status).c_str(), status); 
+            P_PRINTF("[WIFI_PROC] 连接超时: SSID=%s. WiFi Status: %d\n", 
+                wifiStatus.ssidToTry.c_str(), status); 
             WiFi.disconnect(true); 
             responseDoc["success"] = false;
             responseDoc["message"] = "Failed to connect to " + wifiStatus.ssidToTry + " (Timeout, Status: " + String(status) + ")";
             wifiStatus.connectProgress = WIFI_CP_FAILED;
+            sendUpdateToClient = true;
         } else if (status == WL_NO_SSID_AVAIL || status == WL_CONNECT_FAILED || status == WL_CONNECTION_LOST) { 
-            P_PRINTF("[WIFI_PROC] 连接失败: SSID=%s. WiFi Status: %s (%d)\n", 
-                wifiStatus.ssidToTry.c_str(), String(status).c_str(), status);
+            P_PRINTF("[WIFI_PROC] 连接失败: SSID=%s. WiFi Status: %d\n", 
+                wifiStatus.ssidToTry.c_str(), status);
             WiFi.disconnect(true); 
             responseDoc["success"] = false;
             responseDoc["message"] = "Failed to connect to " + wifiStatus.ssidToTry + " (Error, Status: " + String(status) + ")";
             wifiStatus.connectProgress = WIFI_CP_FAILED;
-        } else if (status == WL_IDLE_STATUS) {
-            // 处于 WL_IDLE_STATUS 时，继续等待
+            sendUpdateToClient = true;
+        } else if (status == WL_IDLE_STATUS || status == WL_SCAN_COMPLETED || status == WL_DISCONNECTED) {
+            // P_PRINTF("[WIFI_PROC] WiFi Status: %d, 等待...\n", status); 
             return;
         } else {
-            // 其他状态 (如 WL_SCAN_COMPLETED), 继续等待
+            // P_PRINTF("[WIFI_PROC] 未知 WiFi Status: %d, 等待...\n", status); 
             return;
         }
 
-        if (wifiStatus.connectInitiatorClientNum != 255 && wifiStatus.connectInitiatorClientNum < webSocket.connectedClients()) {
-            String responseStr;
-            serializeJson(responseDoc, responseStr);
-            webSocket.sendTXT(wifiStatus.connectInitiatorClientNum, responseStr);
+        if (sendUpdateToClient) {
+            if (wifiStatus.connectInitiatorClientNum != 255 && wifiStatus.connectInitiatorClientNum < webSocket.connectedClients()) {
+                String responseStr;
+                serializeJson(responseDoc, responseStr);
+                webSocket.sendTXT(wifiStatus.connectInitiatorClientNum, responseStr);
+            }
+            sendWifiStatusToClients(wifiStatus); 
+            wifiStatus.connectInitiatorClientNum = 255; 
         }
-        sendWifiStatusToClients(wifiStatus); 
-        wifiStatus.connectInitiatorClientNum = 255; 
     }
 }
 
@@ -1084,7 +1115,7 @@ void handleConnectWifiRequest(uint8_t clientNum, const JsonDocument& request, Js
         response["message"] = "Connection attempt already in progress.";
     } else {
         wifiState.ssidToTry = request["ssid"].as<String>();
-        wifiState.passwordToTry = request["password"].as<String>();
+        wifiState.passwordToTry = request["password"].as<String>(); // 获取用户输入的密码
         P_PRINTF("[WIFI_CONN] 收到连接请求: SSID=%s\n", wifiState.ssidToTry.c_str());
         if (wifiState.ssidToTry.length() == 0) {
             response["type"] = "connectWifiStatus";
@@ -1092,9 +1123,9 @@ void handleConnectWifiRequest(uint8_t clientNum, const JsonDocument& request, Js
             response["message"] = "SSID cannot be empty.";
         } else {
             wifiState.connectInitiatorClientNum = clientNum;
-            wifiState.connectProgress = WIFI_CP_DISCONNECTING;
+            wifiState.connectProgress = WIFI_CP_DISCONNECTING; 
             wifiState.connectAttemptStartTime = millis();
-            WiFi.disconnect(false); 
+            WiFi.disconnect(true); 
             response["type"] = "connectWifiStatus"; 
             response["success"] = false; 
             response["message"] = "Initiating connection to " + wifiState.ssidToTry + "...";
@@ -1264,6 +1295,7 @@ void resetAllSettingsToDefault(DeviceConfig& config) {
         DEFAULT_VOC_MIN, DEFAULT_VOC_MAX
     };
     config.currentSsidForSettings = "";
+    config.currentPasswordForSettings = ""; // 重置密码
     config.ledBrightness = DEFAULT_LED_BRIGHTNESS;
     pixels.setBrightness(map(config.ledBrightness, 0, 100, 0, 255)); 
     pixels.show();
