@@ -1,5 +1,5 @@
 // =================================================================================
-// == ESP32 温湿度及多通道气体监测器 V3 (PPM单位, NTP备用机制, I2C检查, 代码重构) ==
+// == ESP32 温湿度及多通道气体监测器 V4 (新增Captive Portal强制门户功能) ==
 // =================================================================================
 
 // == 核心库 ==
@@ -11,14 +11,15 @@
 #include <SPIFFS.h>
 #include <Adafruit_NeoPixel.h>
 #include <DHT.h>
-#include "Multichannel_Gas_GMXXX.h" // 使用新的气体传感器库
-#include <Wire.h>                   // I2C 通信库
-#include <map>                      // 用于 WebSocket action 映射
-#include <functional>               // 用于 std::function
-#include <time.h>                   // 用于NTP时间处理
+#include "Multichannel_Gas_GMXXX.h"
+#include <Wire.h>
+#include <map>
+#include <functional>
+#include <time.h>
+#include <DNSServer.h> // <-- 新增: 用于强制门户的DNS服务器
 
 // == 自定义配置文件 ==
-#include "config.h" // NTP_SYNC_INTERVAL_MS 将从此文件引入
+#include "config.h"
 
 // == 数据结构与状态管理 ==
 
@@ -38,18 +39,10 @@ struct DeviceState {
     float temperature;
     float humidity;
     GasData gasPpmValues;
-
-    SensorStatusVal tempStatus;
-    SensorStatusVal humStatus;
-    SensorStatusVal gasCoStatus;
-    SensorStatusVal gasNo2Status;
-    SensorStatusVal gasC2h5ohStatus;
-    SensorStatusVal gasVocStatus;
-    
+    SensorStatusVal tempStatus, humStatus, gasCoStatus, gasNo2Status, gasC2h5ohStatus, gasVocStatus;
     bool buzzerShouldBeActive;
     unsigned long buzzerStopTime;
     int buzzerBeepCount;
-
     bool ledBlinkState;
     unsigned long lastBlinkTime;
 
@@ -59,7 +52,7 @@ struct DeviceState {
                     gasC2h5ohStatus(SS_INIT), gasVocStatus(SS_INIT),
                     buzzerShouldBeActive(false), buzzerStopTime(0), buzzerBeepCount(0),
                     ledBlinkState(false), lastBlinkTime(0) {
-        gasPpmValues = {NAN, NAN, NAN, NAN}; // 初始化为NAN
+        gasPpmValues = {NAN, NAN, NAN, NAN};
     }
 };
 
@@ -67,10 +60,7 @@ struct DeviceState {
 struct AlarmThresholds {
     float tempMin, tempMax;
     float humMin, humMax;
-    float coPpmMax;
-    float no2PpmMax;
-    float c2h5ohPpmMax;
-    float vocPpmMax;
+    float coPpmMax, no2PpmMax, c2h5ohPpmMax, vocPpmMax;
 };
 
 // 设备配置 (从SPIFFS加载/保存)
@@ -111,12 +101,11 @@ struct WifiState {
 
 // 历史数据点结构
 struct SensorDataPoint {
-    unsigned long timestamp; // Unix timestamp 或 启动后的毫秒数
-    bool isTimeRelative;     // 标记时间戳是否是相对时间
-    float temp;
-    float hum;
-    GasData gas;             // 存储气体数据 (PPM)
-    char timeStr[12];        // HH:MM:SS 或 D... H:M:S 格式
+    unsigned long timestamp;
+    bool isTimeRelative;
+    float temp, hum;
+    GasData gas;
+    char timeStr[12];
 };
 
 // 环形缓冲区实现
@@ -125,96 +114,59 @@ public:
     CircularBuffer(size_t size) : maxSize(size), head(0), tail(0), full(false) {
         buffer.resize(size);
     }
-
     void add(const SensorDataPoint& item) {
         buffer[head] = item;
-        if (full) {
-            tail = (tail + 1) % maxSize;
-        }
+        if (full) { tail = (tail + 1) % maxSize; }
         head = (head + 1) % maxSize;
         full = (head == tail);
     }
-
     const std::vector<SensorDataPoint>& getData() const {
         orderedData.clear();
         if (isEmpty()) return orderedData;
         if (full) {
-            for (size_t i = 0; i < maxSize; ++i) {
-                orderedData.push_back(buffer[(tail + i) % maxSize]);
-            }
+            for (size_t i = 0; i < maxSize; ++i) orderedData.push_back(buffer[(tail + i) % maxSize]);
         } else {
-            for (size_t i = tail; i != head; i = (i + 1) % maxSize) {
-                orderedData.push_back(buffer[i]);
-            }
+            for (size_t i = tail; i != head; i = (i + 1) % maxSize) orderedData.push_back(buffer[i]);
         }
         return orderedData;
     }
-    
     size_t count() const {
         if (full) return maxSize;
         if (head >= tail) return head - tail;
         return maxSize - (tail - head);
     }
-
-    bool isEmpty() const {
-        return !full && (head == tail);
-    }
-    
-    void clear() {
-        head = 0;
-        tail = 0;
-        full = false;
-        orderedData.clear();
-    }
-
+    bool isEmpty() const { return !full && (head == tail); }
+    void clear() { head = 0; tail = 0; full = false; orderedData.clear(); }
 private:
     std::vector<SensorDataPoint> buffer;
     mutable std::vector<SensorDataPoint> orderedData;
-    size_t maxSize;
-    size_t head;
-    size_t tail;
+    size_t maxSize, head, tail;
     bool full;
 };
-
 
 // ==========================================================================
 // == 全局对象和变量 ==
 // ==========================================================================
+DNSServer dnsServer; // <-- 新增: DNS服务器对象
 AsyncWebServer server(80);
 WebSocketsServer webSocket(81);
-
 DHT dht(DHT_PIN, DHT_TYPE);
 GAS_GMXXX<TwoWire> gas_sensor;
-
 Adafruit_NeoPixel pixels(NEOPIXEL_NUM, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
 
-uint32_t COLOR_GREEN_VAL;
-uint32_t COLOR_RED_VAL;
-uint32_t COLOR_BLUE_VAL;
-uint32_t COLOR_YELLOW_VAL;
-uint32_t COLOR_ORANGE_VAL;
-uint32_t COLOR_OFF_VAL;
+uint32_t COLOR_GREEN_VAL, COLOR_RED_VAL, COLOR_BLUE_VAL, COLOR_YELLOW_VAL, COLOR_ORANGE_VAL, COLOR_OFF_VAL;
 
 DeviceState currentState;
 DeviceConfig currentConfig;
 WifiState wifiState;
-
 CircularBuffer historicalData(HISTORICAL_DATA_POINTS);
 
-unsigned long lastSensorReadTime = 0;
-unsigned long lastWebSocketUpdateTime = 0;
-unsigned long lastHistoricalDataSaveTime = 0;
+unsigned long lastSensorReadTime = 0, lastWebSocketUpdateTime = 0, lastHistoricalDataSaveTime = 0;
+unsigned long lastNtpSyncTime = 0, lastNtpAttemptTime = 0;
+bool ntpSynced = false, ntpGiveUp = false;
+int ntpInitialAttempts = 0;
+unsigned long gasSensorWarmupEndTime = 0;
 
-// NTP 相关状态
-unsigned long lastNtpSyncTime = 0;
-bool ntpSynced = false;
-int ntpInitialAttempts = 0; 
-unsigned long lastNtpAttemptTime = 0; 
-bool ntpGiveUp = false; // 新增: 放弃NTP同步的标志
-
-unsigned long gasSensorWarmupEndTime = 0; 
-
-// WebSocket action 处理函数映射
 typedef std::function<void(uint8_t, const JsonDocument&, JsonDocument&)> WebSocketActionHandler;
 std::map<String, WebSocketActionHandler> wsActionHandlers;
 
@@ -257,40 +209,30 @@ void generateTimeStr(unsigned long current_timestamp, bool isRelative, char* buf
 void addHistoricalDataPoint(CircularBuffer& histBuffer, const DeviceState& state);
 void serveStaticFile(AsyncWebServerRequest *request, const char* path, const char* contentType);
 String getSensorStatusString(SensorStatusVal status);
-
+void handleCaptivePortal(AsyncWebServerRequest* request);
 
 // ==========================================================================
 // == Arduino `setup()` 函数 ==
 // ==========================================================================
 void setup() {
     Serial.begin(115200);
-    while (!Serial && millis() < 2000);
-    P_PRINTLN("\n[SETUP] 系统启动中 (V3)...");
-
-    initHardware(); 
+    P_PRINTLN("\n[SETUP] 系统启动中 (V4)...");
+    initHardware();
     initSPIFFS();
-    
     loadConfig(currentConfig);
     pixels.setBrightness(map(currentConfig.ledBrightness, 0, 100, 0, 255));
     pixels.show();
-
     loadHistoricalDataFromFile(historicalData);
-    
-    initWiFi(currentConfig, wifiState); 
-    
-    P_PRINTLN("[NTP] 初始配置NTP...");
+    initWiFi(currentConfig, wifiState);
     configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER1, NTP_SERVER2);
-
     configureWebServer();
     server.begin();
-    P_PRINTLN("[SETUP] HTTP服务器已启动 (端口 80)");
-
+    P_PRINTLN("[SETUP] HTTP服务器已启动");
     setupWebSocketActions();
     webSocket.begin();
     webSocket.onEvent(onWebSocketEvent);
-    P_PRINTLN("[SETUP] WebSocket服务器已启动 (端口 81)");
-
-    gasSensorWarmupEndTime = millis() + GAS_SENSOR_WARMUP_PERIOD_MS; 
+    P_PRINTLN("[SETUP] WebSocket服务器已启动");
+    gasSensorWarmupEndTime = millis() + GAS_SENSOR_WARMUP_PERIOD_MS;
     P_PRINTLN("[SETUP] 初始化完成, 系统运行中.");
 }
 
@@ -298,49 +240,34 @@ void setup() {
 // == Arduino `loop()` 函数 ==
 // ==========================================================================
 void loop() {
-    webSocket.loop(); 
-    processWiFiConnection(wifiState, currentConfig); 
-    processWifiScanResults(wifiState); 
-
+    dnsServer.processNextRequest(); // <-- 新增: 处理DNS请求
+    webSocket.loop();
+    processWiFiConnection(wifiState, currentConfig);
+    processWifiScanResults(wifiState);
     unsigned long currentTime = millis();
-
-    // NTP 同步逻辑: WiFi连上后尝试, 失败一定次数后放弃, 或每小时重试
     if (WiFi.isConnected() && !ntpSynced && !ntpGiveUp) {
         if (currentTime - lastNtpAttemptTime >= NTP_RETRY_DELAY_MS || lastNtpAttemptTime == 0) {
-            attemptNtpSync();
-            lastNtpAttemptTime = currentTime;
+            attemptNtpSync(); lastNtpAttemptTime = currentTime;
         }
     }
-    if (ntpSynced && (currentTime - lastNtpSyncTime >= NTP_SYNC_INTERVAL_MS)) { 
-        P_PRINTLN("[NTP] 尝试每小时重新同步时间...");
-        attemptNtpSync(); 
+    if (ntpSynced && (currentTime - lastNtpSyncTime >= NTP_SYNC_INTERVAL_MS)) {
+        attemptNtpSync();
     }
-
-    // 传感器读取逻辑
     if (currentTime - lastSensorReadTime >= SENSOR_READ_INTERVAL_MS) {
         lastSensorReadTime = currentTime;
         readSensors(currentState);
         checkAlarms(currentState, currentConfig);
-        // 无论NTP是否同步成功,都添加历史数据点
         addHistoricalDataPoint(historicalData, currentState);
     }
-
-    // 更新LED和蜂鸣器
     updateLedStatus(currentState, wifiState, pixels);
     controlBuzzer(currentState);
-
-    // WebSocket 推送逻辑
     if (currentTime - lastWebSocketUpdateTime >= WEBSOCKET_UPDATE_INTERVAL_MS) {
         lastWebSocketUpdateTime = currentTime;
-        if (wifiState.connectProgress == WIFI_CP_IDLE || wifiState.connectProgress == WIFI_CP_FAILED) {
-             if (!wifiState.isScanning) { 
-                sendSensorDataToClients(currentState);
-                sendWifiStatusToClients(wifiState);
-            }
+        if ((wifiState.connectProgress == WIFI_CP_IDLE || wifiState.connectProgress == WIFI_CP_FAILED) && !wifiState.isScanning) {
+            sendSensorDataToClients(currentState);
+            sendWifiStatusToClients(wifiState);
         }
     }
-
-    // 定期保存历史数据到闪存
     if (currentTime - lastHistoricalDataSaveTime >= HISTORICAL_DATA_SAVE_INTERVAL_MS) {
         lastHistoricalDataSaveTime = currentTime;
         saveHistoricalDataToFile(historicalData);
@@ -348,7 +275,7 @@ void loop() {
 }
 
 // ==========================================================================
-// == 初始化函数实现 ==
+// == 函数实现 ==
 // ==========================================================================
 void initHardware() {
     pixels.begin();
@@ -394,6 +321,32 @@ void initSPIFFS() {
     }
 }
 
+void initWiFi(DeviceConfig& config, WifiState& wifiStatus) {
+    WiFi.mode(WIFI_AP_STA);
+    P_PRINTLN("[WIFI] 设置为AP+STA模式.");
+    WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASSWORD, WIFI_AP_CHANNEL, 0, WIFI_AP_MAX_CONNECTIONS);
+    IPAddress apIP = WiFi.softAPIP();
+    P_PRINTF("[WIFI] AP模式已启动. SSID: %s, IP: %s\n", WIFI_AP_SSID, apIP.toString().c_str());
+
+    // --- 新增: 启动DNS服务器以实现强制门户 ---
+    dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
+    dnsServer.start(53, "*", apIP);
+    P_PRINTLN("[DNS] Captive Portal DNS服务器已启动.");
+
+    if (config.currentSsidForSettings.length() > 0) {
+        P_PRINTF("[WIFI] 检测到保存的SSID: %s, 尝试自动连接...\n", config.currentSsidForSettings.c_str());
+        wifiStatus.ssidToTry = config.currentSsidForSettings;
+        wifiStatus.passwordToTry = config.currentPasswordForSettings;
+        wifiStatus.connectInitiatorClientNum = 255;
+        WiFi.begin(wifiStatus.ssidToTry.c_str(), wifiStatus.passwordToTry.c_str());
+        wifiStatus.connectProgress = WIFI_CP_CONNECTING;
+        wifiStatus.connectAttemptStartTime = millis();
+    } else {
+        P_PRINTLN("[WIFI] 没有已保存的STA SSID可供自动连接.");
+        wifiStatus.connectProgress = WIFI_CP_IDLE;
+    }
+}
+
 void attemptNtpSync() { 
     if (!WiFi.isConnected()) {
         P_PRINTLN("[NTP] WiFi未连接, 无法同步时间.");
@@ -423,6 +376,35 @@ void attemptNtpSync() {
     }
 }
 
+void handleCaptivePortal(AsyncWebServerRequest *request) {
+    // 此函数处理所有未匹配的URL请求, 将它们重定向到主页
+    // 这是实现强制门户(Captive Portal)的关键
+    request->redirect("/");
+    P_PRINTF("[Portal] Captive portal重定向: %s\n", request->url().c_str());
+}
+
+void configureWebServer() {
+    // 静态文件服务
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){ request->send(SPIFFS, "/index.html", "text/html"); });
+    server.on("/settings.html", HTTP_GET, [](AsyncWebServerRequest *request){ request->send(SPIFFS, "/settings.html", "text/html"); });
+    server.on("/style.css", HTTP_GET, [](AsyncWebServerRequest *request){ request->send(SPIFFS, "/style.css", "text/css"); });
+    server.on("/script.js", HTTP_GET, [](AsyncWebServerRequest *request){ request->send(SPIFFS, "/script.js", "application/javascript"); });
+    server.on("/lang.json", HTTP_GET, [](AsyncWebServerRequest *request){ request->send(SPIFFS, "/lang.json", "application/json"); });
+    server.on("/chart.min.js", HTTP_GET, [](AsyncWebServerRequest *request){ request->send(SPIFFS, "/chart.min.js", "application/javascript"); });
+    
+    // --- 新增: 强制门户相关路由 ---
+    // 很多操作系统通过访问这些固定URL来检测网络是否需要登录
+    server.on("/generate_204", HTTP_GET, handleCaptivePortal);
+    server.on("/gen_204", HTTP_GET, handleCaptivePortal);
+    server.on("/hotspot-detect.html", HTTP_GET, handleCaptivePortal);
+    server.on("/fwlink", HTTP_GET, handleCaptivePortal);
+    server.on("/ncsi.txt", HTTP_GET, handleCaptivePortal);
+    server.on("/connecttest.txt", HTTP_GET, handleCaptivePortal);
+    server.on("/success.html", HTTP_GET, handleCaptivePortal);
+
+    // --- 修改: 将所有其他未找到的请求重定向到主页 ---
+    server.onNotFound(handleCaptivePortal);
+}
 
 void loadConfig(DeviceConfig& config) {
     P_PRINTLN("[CONFIG] 正在加载配置...");
@@ -577,40 +559,13 @@ bool isGasSensorConnected() {
     return (error == 0);
 }
 
-
-void initWiFi(DeviceConfig& config, WifiState& wifiStatus) {
-    WiFi.mode(WIFI_AP_STA);
-    P_PRINTLN("[WIFI] 设置为AP+STA模式.");
-    WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASSWORD, WIFI_AP_CHANNEL, 0, WIFI_AP_MAX_CONNECTIONS);
-    IPAddress apIP = WiFi.softAPIP();
-    P_PRINTF("[WIFI] AP模式已启动. SSID: %s, IP: %s\n", WIFI_AP_SSID, apIP.toString().c_str());
-
-    if (config.currentSsidForSettings.length() > 0) {
-        P_PRINTF("[WIFI] 检测到保存的SSID: %s, 密码: [敏感信息], 尝试自动连接...\n", config.currentSsidForSettings.c_str());
-        wifiStatus.ssidToTry = config.currentSsidForSettings;
-        wifiStatus.passwordToTry = config.currentPasswordForSettings;
-        wifiStatus.connectInitiatorClientNum = 255; 
-
-        WiFi.begin(wifiStatus.ssidToTry.c_str(), wifiStatus.passwordToTry.c_str());
-        wifiStatus.connectProgress = WIFI_CP_CONNECTING;
-        wifiStatus.connectAttemptStartTime = millis();
-    } else {
-        P_PRINTLN("[WIFI] 没有已保存的STA SSID可供自动连接.");
-        wifiStatus.connectProgress = WIFI_CP_IDLE; 
-    }
-}
-
-// ... processWiFiConnection, startWifiScan, processWifiScanResults 函数保持不变 ...
 void processWiFiConnection(WifiState& wifiStatus, DeviceConfig& config) {
     if (wifiStatus.connectProgress == WIFI_CP_IDLE || wifiStatus.connectProgress == WIFI_CP_FAILED) {
         return;
     }
-
     DynamicJsonDocument responseDoc(256);
     responseDoc["type"] = "connectWifiStatus";
     bool sendUpdateToClient = false;
-
-
     if (wifiStatus.connectProgress == WIFI_CP_DISCONNECTING) {
         if (WiFi.status() == WL_DISCONNECTED || millis() - wifiStatus.connectAttemptStartTime > 3000) { 
             P_PRINTF("[WIFI_PROC] 已断开或超时(WIFI_CP_DISCONNECTING). 尝试连接到 %s\n", wifiStatus.ssidToTry.c_str());
@@ -620,13 +575,11 @@ void processWiFiConnection(WifiState& wifiStatus, DeviceConfig& config) {
         }
         return; 
     }
-
     if (wifiStatus.connectProgress == WIFI_CP_CONNECTING) {
         wl_status_t status = WiFi.status();
-
         if (status == WL_CONNECTED) {
             config.currentSsidForSettings = wifiStatus.ssidToTry; 
-            config.currentPasswordForSettings = wifiStatus.passwordToTry; // 保存密码
+            config.currentPasswordForSettings = wifiStatus.passwordToTry;
             saveConfig(config); 
             P_PRINTF("[WIFI_PROC] 连接成功: SSID=%s, IP=%s\n", wifiStatus.ssidToTry.c_str(), WiFi.localIP().toString().c_str());
             responseDoc["success"] = true;
@@ -634,22 +587,18 @@ void processWiFiConnection(WifiState& wifiStatus, DeviceConfig& config) {
             responseDoc["ip"] = WiFi.localIP().toString();
             wifiStatus.connectProgress = WIFI_CP_IDLE;
             sendUpdateToClient = true;
-            
             ntpInitialAttempts = 0; 
             lastNtpAttemptTime = 0;
-            ntpGiveUp = false; // 重新连接WiFi后，重置NTP放弃标志
-
+            ntpGiveUp = false;
         } else if (millis() - wifiStatus.connectAttemptStartTime > 20000) { 
-            P_PRINTF("[WIFI_PROC] 连接超时: SSID=%s. WiFi Status: %d\n", 
-                wifiStatus.ssidToTry.c_str(), status); 
+            P_PRINTF("[WIFI_PROC] 连接超时: SSID=%s. WiFi Status: %d\n", wifiStatus.ssidToTry.c_str(), status); 
             WiFi.disconnect(true); 
             responseDoc["success"] = false;
             responseDoc["message"] = "Failed to connect to " + wifiStatus.ssidToTry + " (Timeout, Status: " + String(status) + ")";
             wifiStatus.connectProgress = WIFI_CP_FAILED;
             sendUpdateToClient = true;
         } else if (status == WL_NO_SSID_AVAIL || status == WL_CONNECT_FAILED || status == WL_CONNECTION_LOST) { 
-            P_PRINTF("[WIFI_PROC] 连接失败: SSID=%s. WiFi Status: %d\n", 
-                wifiStatus.ssidToTry.c_str(), status);
+            P_PRINTF("[WIFI_PROC] 连接失败: SSID=%s. WiFi Status: %d\n", wifiStatus.ssidToTry.c_str(), status);
             WiFi.disconnect(true); 
             responseDoc["success"] = false;
             responseDoc["message"] = "Failed to connect to " + wifiStatus.ssidToTry + " (Error, Status: " + String(status) + ")";
@@ -660,7 +609,6 @@ void processWiFiConnection(WifiState& wifiStatus, DeviceConfig& config) {
         } else {
             return;
         }
-
         if (sendUpdateToClient) {
             if (wifiStatus.connectInitiatorClientNum != 255 && wifiStatus.connectInitiatorClientNum < webSocket.connectedClients()) {
                 String responseStr;
@@ -672,6 +620,7 @@ void processWiFiConnection(WifiState& wifiStatus, DeviceConfig& config) {
         }
     }
 }
+
 void startWifiScan(uint8_t clientNum, WifiState& wifiStatus, JsonDocument& responseDoc) {
     if (wifiStatus.isScanning) {
         P_PRINTLN("[WIFI_SCAN] WiFi扫描已在进行中.");
@@ -695,14 +644,11 @@ void startWifiScan(uint8_t clientNum, WifiState& wifiStatus, JsonDocument& respo
         }
     }
 }
-void processWifiScanResults(WifiState& wifiStatus) {
-    if (!wifiStatus.isScanning) {
-        return;
-    }
 
+void processWifiScanResults(WifiState& wifiStatus) {
+    if (!wifiStatus.isScanning) return;
     int8_t scanResult = WiFi.scanComplete();
     const unsigned long WIFI_SCAN_TIMEOUT_MS = 20000; 
-
     if (scanResult == WIFI_SCAN_RUNNING) {
         if (millis() - wifiStatus.scanStartTime > WIFI_SCAN_TIMEOUT_MS) {
             P_PRINTLN("[WIFI_SCAN_PROC] 扫描超时!");
@@ -721,14 +667,11 @@ void processWifiScanResults(WifiState& wifiStatus) {
         }
         return;
     }
-
     P_PRINTF("[WIFI_SCAN_PROC] 异步扫描完成. 结果: %d\n", scanResult);
     wifiStatus.isScanning = false;
-
     DynamicJsonDocument doc(scanResult > 0 ? JSON_ARRAY_SIZE(scanResult) + scanResult * JSON_OBJECT_SIZE(3) + 256 : 256);
     doc["type"] = "wifiScanResults";
     JsonArray networks = doc.createNestedArray("networks");
-
     if (scanResult > 0) {
         for (int i = 0; i < scanResult; ++i) {
             JsonObject net = networks.createNestedObject();
@@ -749,7 +692,6 @@ void processWifiScanResults(WifiState& wifiStatus) {
     } else {
          P_PRINTLN("[WIFI_SCAN_PROC] 未发现WiFi网络.");
     }
-
     String responseStr;
     serializeJson(doc, responseStr);
     if (wifiStatus.scanRequesterClientNum != 255 && wifiStatus.scanRequesterClientNum < webSocket.connectedClients()) {
@@ -759,9 +701,7 @@ void processWifiScanResults(WifiState& wifiStatus) {
     wifiStatus.scanRequesterClientNum = 255;
 }
 
-
 void readSensors(DeviceState& state) {
-    // 读取温湿度传感器
     float newTemp = dht.readTemperature();
     float newHum = dht.readHumidity();
     if (isnan(newTemp) || isnan(newHum)) {
@@ -773,33 +713,24 @@ void readSensors(DeviceState& state) {
         if(state.tempStatus == SS_INIT || state.tempStatus == SS_DISCONNECTED) state.tempStatus = SS_NORMAL;
         if(state.humStatus == SS_INIT || state.humStatus == SS_DISCONNECTED) state.humStatus = SS_NORMAL;
     }
-
-    // 检查I2C气体传感器是否在线
     if (!isGasSensorConnected()) {
         state.gasCoStatus = state.gasNo2Status = state.gasC2h5ohStatus = state.gasVocStatus = SS_DISCONNECTED;
         state.gasPpmValues = {NAN, NAN, NAN, NAN};
-        return; // 如果传感器不在线，直接返回
+        return;
     }
-    
-    // 检查是否在物理预热期
     bool isGasSensorPhysicallyWarmingUp = (millis() < gasSensorWarmupEndTime);
     if (isGasSensorPhysicallyWarmingUp) {
         state.gasCoStatus = state.gasNo2Status = state.gasC2h5ohStatus = state.gasVocStatus = SS_INIT;
         state.gasPpmValues = {NAN, NAN, NAN, NAN}; 
     } else {
-        // 读取气体数据 (假设库返回PPM值)
         state.gasPpmValues.co = gas_sensor.measure_CO();
         state.gasPpmValues.no2 = gas_sensor.measure_NO2();
         state.gasPpmValues.c2h5oh = gas_sensor.measure_C2H5OH();
         state.gasPpmValues.voc = gas_sensor.measure_VOC();
-
-        // 假设库在出错时返回负值
         state.gasCoStatus = (state.gasPpmValues.co < 0) ? SS_DISCONNECTED : SS_NORMAL;
         state.gasNo2Status = (state.gasPpmValues.no2 < 0) ? SS_DISCONNECTED : SS_NORMAL;
         state.gasC2h5ohStatus = (state.gasPpmValues.c2h5oh < 0) ? SS_DISCONNECTED : SS_NORMAL;
         state.gasVocStatus = (state.gasPpmValues.voc < 0) ? SS_DISCONNECTED : SS_NORMAL;
-
-        // 如果值是正常的，清除初始化状态
         if(state.gasCoStatus == SS_INIT && state.gasCoStatus != SS_DISCONNECTED) state.gasCoStatus = SS_NORMAL;
         if(state.gasNo2Status == SS_INIT && state.gasNo2Status != SS_DISCONNECTED) state.gasNo2Status = SS_NORMAL;
         if(state.gasC2h5ohStatus == SS_INIT && state.gasC2h5ohStatus != SS_DISCONNECTED) state.gasC2h5ohStatus = SS_NORMAL;
@@ -809,24 +740,18 @@ void readSensors(DeviceState& state) {
 
 void checkAlarms(DeviceState& state, const DeviceConfig& config) {
     bool anyAlarm = false;
-
-    // 温湿度报警检查
     if (state.tempStatus != SS_DISCONNECTED && state.tempStatus != SS_INIT) {
         if (state.temperature < config.thresholds.tempMin || state.temperature > config.thresholds.tempMax) {
             if (state.tempStatus == SS_NORMAL) P_PRINTF("[ALARM] 温度超限! %.1f°C (范围: %.1f-%.1f)\n", state.temperature, config.thresholds.tempMin, config.thresholds.tempMax);
-            state.tempStatus = SS_WARNING;
-            anyAlarm = true;
+            state.tempStatus = SS_WARNING; anyAlarm = true;
         } else { state.tempStatus = SS_NORMAL; }
     }
     if (state.humStatus != SS_DISCONNECTED && state.humStatus != SS_INIT) {
         if (state.humidity < config.thresholds.humMin || state.humidity > config.thresholds.humMax) {
             if (state.humStatus == SS_NORMAL) P_PRINTF("[ALARM] 湿度超限! %.1f%% (范围: %.1f-%.1f)\n", state.humidity, config.thresholds.humMin, config.thresholds.humMax);
-            state.humStatus = SS_WARNING;
-            anyAlarm = true;
+            state.humStatus = SS_WARNING; anyAlarm = true;
         } else { state.humStatus = SS_NORMAL; }
     }
-
-    // 气体PPM报警检查
     if (state.gasCoStatus != SS_DISCONNECTED && state.gasCoStatus != SS_INIT) {
         if (state.gasPpmValues.co > config.thresholds.coPpmMax) {
             if (state.gasCoStatus == SS_NORMAL) P_PRINTF("[ALARM] CO超限! %.2f PPM (阈值: >%.2f)\n", state.gasPpmValues.co, config.thresholds.coPpmMax);
@@ -851,13 +776,10 @@ void checkAlarms(DeviceState& state, const DeviceConfig& config) {
             state.gasVocStatus = SS_WARNING; anyAlarm = true;
         } else { state.gasVocStatus = SS_NORMAL; }
     }
-
-    // 统一处理蜂鸣器
     if (anyAlarm) {
         if (!state.buzzerShouldBeActive) {
             state.buzzerShouldBeActive = true;
-            state.buzzerBeepCount = 0; 
-            P_PRINTLN("[ALARM] 蜂鸣器激活!");
+            state.buzzerBeepCount = 0; P_PRINTLN("[ALARM] 蜂鸣器激活!");
         }
     } else {
         if (state.buzzerShouldBeActive) {
@@ -881,9 +803,7 @@ void updateLedStatus(const DeviceState& state, const WifiState& wifiStatus, cons
     bool isAnySensorInitializing = (state.tempStatus == SS_INIT || state.humStatus == SS_INIT ||
                                    state.gasCoStatus == SS_INIT || state.gasNo2Status == SS_INIT ||
                                    state.gasC2h5ohStatus == SS_INIT || state.gasVocStatus == SS_INIT);
-
     DeviceState& mutableState = const_cast<DeviceState&>(state); 
-
     if (wifiStatus.isScanning) { 
         if (currentTime - mutableState.lastBlinkTime >= 200) { 
             mutableState.lastBlinkTime = currentTime; 
@@ -915,15 +835,11 @@ void updateLedStatus(const DeviceState& state, const WifiState& wifiStatus, cons
     } else { 
         colorToSet = COLOR_GREEN_VAL; 
     }
-    
     if (pixels.getPixelColor(0) != colorToSet) { 
         pixels.setPixelColor(0, colorToSet);
         pixels.show();
     }
 }
-
-// ... controlBuzzer, onWebSocketEvent, WebSocket handlers ...
-// ... 和其他未明确要求修改的函数保持基本不变 ...
 
 void controlBuzzer(DeviceState& state) {
     unsigned long currentTime = millis();
@@ -950,6 +866,7 @@ void controlBuzzer(DeviceState& state) {
         state.buzzerStopTime = 0;  
     }
 }
+
 void onWebSocketEvent(uint8_t clientNum, WStype_t type, uint8_t * payload, size_t length) {
     switch (type) {
         case WStype_DISCONNECTED:
@@ -972,9 +889,7 @@ void onWebSocketEvent(uint8_t clientNum, WStype_t type, uint8_t * payload, size_
             P_PRINTF("[%u] WS收到文本: %s\n", clientNum, (char *)payload);
             DynamicJsonDocument doc(1024); 
             DeserializationError error = deserializeJson(doc, payload, length);
-            
             DynamicJsonDocument responseDoc(512); 
-
             if (error) {
                 P_PRINTF("[%u] WS JSON解析失败: %s\n", clientNum, error.c_str());
                 responseDoc["type"] = "error";
@@ -982,7 +897,6 @@ void onWebSocketEvent(uint8_t clientNum, WStype_t type, uint8_t * payload, size_
             } else {
                 handleWebSocketMessage(clientNum, doc, responseDoc);
             }
-            
             if (responseDoc.size() > 0) {
                 String responseStr;
                 serializeJson(responseDoc, responseStr);
@@ -993,6 +907,7 @@ void onWebSocketEvent(uint8_t clientNum, WStype_t type, uint8_t * payload, size_
         default: break;
     }
 }
+
 void setupWebSocketActions() {
     wsActionHandlers["getCurrentSettings"] = handleGetCurrentSettingsRequest;
     wsActionHandlers["getHistoricalData"] = handleGetHistoricalDataRequest;
@@ -1002,6 +917,7 @@ void setupWebSocketActions() {
     wsActionHandlers["connectWifi"] = handleConnectWifiRequest;
     wsActionHandlers["resetSettings"] = handleResetSettingsRequest;
 }
+
 void handleWebSocketMessage(uint8_t clientNum, const JsonDocument& doc, JsonDocument& responseDoc) {
     const char* action = doc["action"];
     if (!action) {
@@ -1011,10 +927,8 @@ void handleWebSocketMessage(uint8_t clientNum, const JsonDocument& doc, JsonDocu
         return;
     }
     P_PRINTF("[%u] WS action: %s\n", clientNum, action);
-
     String actionStr = String(action);
     auto it = wsActionHandlers.find(actionStr);
-
     if (it != wsActionHandlers.end()) {
         it->second(clientNum, doc, responseDoc);
     } else {
@@ -1023,14 +937,16 @@ void handleWebSocketMessage(uint8_t clientNum, const JsonDocument& doc, JsonDocu
         responseDoc["message"] = "Unknown action: " + actionStr;
     }
 }
+
 void handleGetCurrentSettingsRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) {
     sendCurrentSettingsToClient(clientNum, currentConfig);
 }
+
 void handleGetHistoricalDataRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) {
     sendHistoricalDataToClient(clientNum, historicalData);
 }
+
 void handleSaveThresholdsRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) {
-    // 更新为PPM阈值
     currentConfig.thresholds.tempMin = request["tempMin"] | currentConfig.thresholds.tempMin;
     currentConfig.thresholds.tempMax = request["tempMax"] | currentConfig.thresholds.tempMax;
     currentConfig.thresholds.humMin  = request["humMin"]  | currentConfig.thresholds.humMin;
@@ -1039,14 +955,13 @@ void handleSaveThresholdsRequest(uint8_t clientNum, const JsonDocument& request,
     currentConfig.thresholds.no2PpmMax  = request["no2PpmMax"]  | currentConfig.thresholds.no2PpmMax;
     currentConfig.thresholds.c2h5ohPpmMax = request["c2h5ohPpmMax"] | currentConfig.thresholds.c2h5ohPpmMax;
     currentConfig.thresholds.vocPpmMax  = request["vocPpmMax"]  | currentConfig.thresholds.vocPpmMax;
-    
     saveConfig(currentConfig);
-    checkAlarms(currentState, currentConfig); // 重新检查警报
-    
+    checkAlarms(currentState, currentConfig);
     response["type"] = "saveSettingsStatus";
     response["success"] = true;
     response["message"] = "Thresholds saved.";
 }
+
 void handleSaveLedBrightnessRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) {
     if (request.containsKey("brightness") && request["brightness"].is<int>()) {
         int brightness = request["brightness"].as<int>();
@@ -1069,9 +984,11 @@ void handleSaveLedBrightnessRequest(uint8_t clientNum, const JsonDocument& reque
         response["message"] = "Missing or invalid 'brightness' field.";
     }
 }
+
 void handleScanWifiRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) {
     startWifiScan(clientNum, wifiState, response);
 }
+
 void handleConnectWifiRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) {
     if (wifiState.connectProgress != WIFI_CP_IDLE && wifiState.connectProgress != WIFI_CP_FAILED) {
         P_PRINTLN("[WIFI_CONN] WiFi连接已在进行中.");
@@ -1080,7 +997,7 @@ void handleConnectWifiRequest(uint8_t clientNum, const JsonDocument& request, Js
         response["message"] = "Connection attempt already in progress.";
     } else {
         wifiState.ssidToTry = request["ssid"].as<String>();
-        wifiState.passwordToTry = request["password"].as<String>(); // 获取用户输入的密码
+        wifiState.passwordToTry = request["password"].as<String>();
         P_PRINTF("[WIFI_CONN] 收到连接请求: SSID=%s\n", wifiState.ssidToTry.c_str());
         if (wifiState.ssidToTry.length() == 0) {
             response["type"] = "connectWifiStatus";
@@ -1097,47 +1014,40 @@ void handleConnectWifiRequest(uint8_t clientNum, const JsonDocument& request, Js
         }
     }
 }
+
 void handleResetSettingsRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) {
     P_PRINTLN("[RESET] 收到恢复出厂设置请求.");
     resetAllSettingsToDefault(currentConfig);
     saveConfig(currentConfig);
     historicalData.clear();
     saveHistoricalDataToFile(historicalData);
-    
     response["type"] = "resetStatus";
     response["success"] = true;
     response["message"] = "Settings reset. Device will restart.";
-    
     String respStr;
     serializeJson(response, respStr);
     webSocket.sendTXT(clientNum, respStr);
-    
     P_PRINTLN("[RESET] 设置已重置, 准备重启...");
     delay(1000);
     ESP.restart();
 }
-
 
 void sendSensorDataToClients(const DeviceState& state, uint8_t specificClientNum) {
     DynamicJsonDocument doc(1024); 
     doc["type"] = "sensorData";
     if (isnan(state.temperature)) doc["temperature"] = nullptr; else doc["temperature"] = state.temperature;
     if (isnan(state.humidity)) doc["humidity"] = nullptr; else doc["humidity"] = state.humidity;
-    
-    // 发送PPM值
     JsonObject gas = doc.createNestedObject("gasPpm");
     if (isnan(state.gasPpmValues.co)) gas["co"] = nullptr; else gas["co"] = state.gasPpmValues.co;
     if (isnan(state.gasPpmValues.no2)) gas["no2"] = nullptr; else gas["no2"] = state.gasPpmValues.no2;
     if (isnan(state.gasPpmValues.c2h5oh)) gas["c2h5oh"] = nullptr; else gas["c2h5oh"] = state.gasPpmValues.c2h5oh;
     if (isnan(state.gasPpmValues.voc)) gas["voc"] = nullptr; else gas["voc"] = state.gasPpmValues.voc;
-
     doc["tempStatus"] = getSensorStatusString(state.tempStatus);
     doc["humStatus"]  = getSensorStatusString(state.humStatus);
     doc["gasCoStatus"] = getSensorStatusString(state.gasCoStatus);
     doc["gasNo2Status"] = getSensorStatusString(state.gasNo2Status);
     doc["gasC2h5ohStatus"] = getSensorStatusString(state.gasC2h5ohStatus);
     doc["gasVocStatus"] = getSensorStatusString(state.gasVocStatus);
-
     doc["timeIsRelative"] = !ntpSynced;
     char timeStr[12];
     if (ntpSynced) {
@@ -1148,12 +1058,12 @@ void sendSensorDataToClients(const DeviceState& state, uint8_t specificClientNum
         generateTimeStr(millis(), true, timeStr);
     }
     doc["timeStr"] = timeStr;
-    
     String jsonString;
     serializeJson(doc, jsonString);
     if (specificClientNum != 255 && specificClientNum < webSocket.connectedClients()) webSocket.sendTXT(specificClientNum, jsonString);
     else webSocket.broadcastTXT(jsonString);
 }
+
 void sendWifiStatusToClients(const WifiState& wifiStatus, uint8_t specificClientNum) {
     DynamicJsonDocument doc(512);
     doc["type"] = "wifiStatus";
@@ -1168,21 +1078,19 @@ void sendWifiStatusToClients(const WifiState& wifiStatus, uint8_t specificClient
     doc["connecting_attempt_ssid"] = (wifiStatus.connectProgress == WIFI_CP_CONNECTING || wifiStatus.connectProgress == WIFI_CP_DISCONNECTING) ? wifiStatus.ssidToTry : "";
     doc["connection_failed"] = (wifiStatus.connectProgress == WIFI_CP_FAILED);
     doc["ntp_synced"] = ntpSynced;
-
     String jsonString;
     serializeJson(doc, jsonString);
     if (specificClientNum != 255 && specificClientNum < webSocket.connectedClients()) webSocket.sendTXT(specificClientNum, jsonString);
     else webSocket.broadcastTXT(jsonString);
 }
+
 void sendHistoricalDataToClient(uint8_t clientNum, const CircularBuffer& histBuffer) {
     if (clientNum >= webSocket.connectedClients()) return;
     const std::vector<SensorDataPoint>& dataToSend = histBuffer.getData();
     P_PRINTF("[HISTORY] 发送历史数据给客户端 %u (%u 条)\n", clientNum, dataToSend.size());
-    
     DynamicJsonDocument doc(min((size_t)(1024 * 16), (size_t)(JSON_ARRAY_SIZE(dataToSend.size()) + dataToSend.size() * JSON_OBJECT_SIZE(8)))); 
     doc["type"] = "historicalData";
     JsonArray historyArr = doc.createNestedArray("history");
-
     for (const auto& dp : dataToSend) {
         JsonObject dataPoint = historyArr.createNestedObject();
         dataPoint["time"] = dp.timeStr;
@@ -1206,6 +1114,7 @@ void sendHistoricalDataToClient(uint8_t clientNum, const CircularBuffer& histBuf
         String errStr; serializeJson(errDoc, errStr); webSocket.sendTXT(clientNum, errStr);
     }
 }
+
 void sendCurrentSettingsToClient(uint8_t clientNum, const DeviceConfig& config) {
     if (clientNum >= webSocket.connectedClients()) return;
     P_PRINTF("[SETTINGS] 发送当前设置给客户端 %u\n", clientNum);
@@ -1221,35 +1130,13 @@ void sendCurrentSettingsToClient(uint8_t clientNum, const DeviceConfig& config) 
     thresholdsObj["no2PpmMax"] = config.thresholds.no2PpmMax;   
     thresholdsObj["c2h5ohPpmMax"] = config.thresholds.c2h5ohPpmMax; 
     thresholdsObj["vocPpmMax"] = config.thresholds.vocPpmMax;
-    
     settingsObj["currentSSID"] = WiFi.isConnected() ? WiFi.SSID() : config.currentSsidForSettings;
     settingsObj["ledBrightness"] = config.ledBrightness;
-    
     String jsonString;
     serializeJson(doc, jsonString);
     webSocket.sendTXT(clientNum, jsonString);
 }
-void serveStaticFile(AsyncWebServerRequest *request, const char* path, const char* contentType) {
-    if (SPIFFS.exists(path)) {
-        request->send(SPIFFS, path, contentType);
-    } else {
-        P_PRINTF("[HTTP] 文件未找到: %s\n", path);
-        request->send(404, "text/plain", "404: File Not Found");
-    }
-}
-void configureWebServer() {
-    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){ serveStaticFile(request, "/index.html", "text/html"); });
-    server.on("/settings.html", HTTP_GET, [](AsyncWebServerRequest *request){ serveStaticFile(request, "/settings.html", "text/html"); });
-    server.on("/style.css", HTTP_GET, [](AsyncWebServerRequest *request){ serveStaticFile(request, "/style.css", "text/css"); });
-    server.on("/script.js", HTTP_GET, [](AsyncWebServerRequest *request){ serveStaticFile(request, "/script.js", "application/javascript"); });
-    server.on("/lang.json", HTTP_GET, [](AsyncWebServerRequest *request){ serveStaticFile(request, "/lang.json", "application/json"); });
-    server.on("/chart.min.js", HTTP_GET, [](AsyncWebServerRequest *request){ serveStaticFile(request, "/chart.min.js", "application/javascript"); });
-    
-    server.onNotFound([](AsyncWebServerRequest *request){
-        P_PRINTF("[HTTP] 未找到 (onNotFound): %s\n", request->url().c_str());
-        request->send(404, "text/plain", "404: Not Found");
-    });
-}
+
 void resetAllSettingsToDefault(DeviceConfig& config) {
     P_PRINTLN("[CONFIG] 重置所有设置为默认值 (内存中).");
     config.thresholds = {
@@ -1293,11 +1180,8 @@ void generateTimeStr(unsigned long current_ts, bool isRelative, char* buffer) {
 }
 
 void addHistoricalDataPoint(CircularBuffer& histBuffer, const DeviceState& state) {
-    // 只要有任何一个传感器有效就记录
     if (isnan(state.temperature) && isnan(state.humidity) && isnan(state.gasPpmValues.co)) return;
-
     SensorDataPoint dp;
-    
     dp.isTimeRelative = !ntpSynced;
     if (dp.isTimeRelative) {
         dp.timestamp = millis();
@@ -1306,14 +1190,13 @@ void addHistoricalDataPoint(CircularBuffer& histBuffer, const DeviceState& state
         gettimeofday(&tv, NULL);
         dp.timestamp = tv.tv_sec;
     }
-
     dp.temp = state.temperature; 
     dp.hum = state.humidity; 
     dp.gas = state.gasPpmValues;
     generateTimeStr(dp.timestamp, dp.isTimeRelative, dp.timeStr);
-    
     histBuffer.add(dp);
 }
+
 String getSensorStatusString(SensorStatusVal status) {
     switch (status) {
         case SS_NORMAL: return "normal";
