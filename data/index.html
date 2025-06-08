@@ -73,9 +73,17 @@
         </div>
 
         <div class="chart-container-wrapper">
-            <h2 data-translate="historical_data">历史数据</h2>
+            <h2 data-translate="temphum_chart_title">温湿度历史数据</h2>
             <div class="chart-container">
-                <canvas id="sensorDataChart"></canvas>
+                <canvas id="tempHumChart"></canvas>
+            </div>
+        </div>
+
+        <!-- 新增的气体图表容器 -->
+        <div class="chart-container-wrapper">
+            <h2 data-translate="gas_chart_title">气体浓度历史数据 (PPM)</h2>
+            <div class="chart-container">
+                <canvas id="gasChart"></canvas>
             </div>
         </div>
 
@@ -84,6 +92,7 @@
             <p><span data-translate="status">状态:</span> <span id="wifiStatusText" data-translate="wifi_disconnected">未连接</span></p>
             <p>SSID: <span id="wifiSSIDText">N/A</span></p>
             <p><span data-translate="ip_address">IP 地址:</span> <span id="wifiIPText">N/A</span></p>
+            <p><span data-translate="ntp_status">NTP时间同步:</span> <span id="ntpStatusText" data-translate="ntp_status_pending">同步中...</span></p>
         </div>
     </div>
 

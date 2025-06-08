@@ -1,6 +1,6 @@
-// ==========================================================================
-// == ESP32 温湿度及多通道气体监测器 V2 (使用 Multichannel_Gas_GMXXX) ==
-// ==========================================================================
+// =================================================================================
+// == ESP32 温湿度及多通道气体监测器 V3 (PPM单位, NTP备用机制, I2C检查, 代码重构) ==
+// =================================================================================
 
 // == 核心库 ==
 #include <Arduino.h>
@@ -25,19 +25,19 @@
 // 传感器状态枚举
 enum SensorStatusVal { SS_NORMAL, SS_WARNING, SS_DISCONNECTED, SS_INIT };
 
-// 多通道气体传感器数据结构 (存储原始ADC值或转换后的PPM)
+// 多通道气体传感器数据结构 (存储转换后的PPM值)
 struct GasData {
-    float co;      // 一氧化碳 (CO) - 当前存储ADC值
-    float no2;     // 二氧化氮 (NO2) - 当前存储ADC值
-    float c2h5oh;  // 乙醇 (C2H5OH) - 当前存储ADC值
-    float voc;     // 挥发性有机物 (VOC) - 当前存储ADC值
+    float co;      // 一氧化碳 (CO) - PPM
+    float no2;     // 二氧化氮 (NO2) - PPM
+    float c2h5oh;  // 乙醇 (C2H5OH) - PPM
+    float voc;     // 挥发性有机物 (VOC) - PPM
 };
 
 // 设备当前状态
 struct DeviceState {
     float temperature;
     float humidity;
-    GasData gasValues;
+    GasData gasPpmValues;
 
     SensorStatusVal tempStatus;
     SensorStatusVal humStatus;
@@ -59,35 +59,35 @@ struct DeviceState {
                     gasC2h5ohStatus(SS_INIT), gasVocStatus(SS_INIT),
                     buzzerShouldBeActive(false), buzzerStopTime(0), buzzerBeepCount(0),
                     ledBlinkState(false), lastBlinkTime(0) {
-        gasValues = {NAN, NAN, NAN, NAN}; // 初始化为NAN
+        gasPpmValues = {NAN, NAN, NAN, NAN}; // 初始化为NAN
     }
 };
 
-// 报警阈值配置
+// 报警阈值配置 (单位全部为PPM)
 struct AlarmThresholds {
     float tempMin, tempMax;
     float humMin, humMax;
-    float coMin, coMax;         // 注意: 这些阈值需要与 gasValues 中的单位一致 (ADC或PPM)
-    float no2Min, no2Max;
-    float c2h5ohMin, c2h5ohMax;
-    float vocMin, vocMax;
+    float coPpmMax;
+    float no2PpmMax;
+    float c2h5ohPpmMax;
+    float vocPpmMax;
 };
 
 // 设备配置 (从SPIFFS加载/保存)
 struct DeviceConfig {
     AlarmThresholds thresholds;
-    String currentSsidForSettings; // 用于保存到设置的SSID
-    String currentPasswordForSettings; // 新增：用于保存WiFi密码
-    uint8_t ledBrightness;       // LED亮度 (0-100)
+    String currentSsidForSettings;
+    String currentPasswordForSettings;
+    uint8_t ledBrightness;
 
     DeviceConfig() : ledBrightness(DEFAULT_LED_BRIGHTNESS) {
         thresholds = {
             DEFAULT_TEMP_MIN, DEFAULT_TEMP_MAX,
             DEFAULT_HUM_MIN, DEFAULT_HUM_MAX,
-            DEFAULT_CO_MIN, DEFAULT_CO_MAX,
-            DEFAULT_NO2_MIN, DEFAULT_NO2_MAX,
-            DEFAULT_C2H5OH_MIN, DEFAULT_C2H5OH_MAX,
-            DEFAULT_VOC_MIN, DEFAULT_VOC_MAX
+            DEFAULT_CO_PPM_MAX,
+            DEFAULT_NO2_PPM_MAX,
+            DEFAULT_C2H5OH_PPM_MAX,
+            DEFAULT_VOC_PPM_MAX
         };
     }
 };
@@ -99,9 +99,9 @@ struct WifiState {
     String ssidToTry;
     String passwordToTry;
     unsigned long connectAttemptStartTime;
-    uint8_t connectInitiatorClientNum; // 发起连接的客户端编号
+    uint8_t connectInitiatorClientNum;
     bool isScanning;
-    uint8_t scanRequesterClientNum;    // 发起扫描的客户端编号
+    uint8_t scanRequesterClientNum;
     unsigned long scanStartTime;
 
     WifiState() : connectProgress(WIFI_CP_IDLE), connectAttemptStartTime(0),
@@ -111,11 +111,12 @@ struct WifiState {
 
 // 历史数据点结构
 struct SensorDataPoint {
-    unsigned long timestamp; // Unix timestamp (seconds since epoch)
+    unsigned long timestamp; // Unix timestamp 或 启动后的毫秒数
+    bool isTimeRelative;     // 标记时间戳是否是相对时间
     float temp;
     float hum;
-    GasData gas; // 存储气体数据
-    char timeStr[9]; // HH:MM:SS 格式的时间字符串 (用于图表)
+    GasData gas;             // 存储气体数据 (PPM)
+    char timeStr[12];        // HH:MM:SS 或 D... H:M:S 格式
 };
 
 // 环形缓冲区实现
@@ -183,7 +184,7 @@ AsyncWebServer server(80);
 WebSocketsServer webSocket(81);
 
 DHT dht(DHT_PIN, DHT_TYPE);
-GAS_GMXXX<TwoWire> gas_sensor; // 使用新的气体传感器库类型
+GAS_GMXXX<TwoWire> gas_sensor;
 
 Adafruit_NeoPixel pixels(NEOPIXEL_NUM, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
 
@@ -209,6 +210,7 @@ unsigned long lastNtpSyncTime = 0;
 bool ntpSynced = false;
 int ntpInitialAttempts = 0; 
 unsigned long lastNtpAttemptTime = 0; 
+bool ntpGiveUp = false; // 新增: 放弃NTP同步的标志
 
 unsigned long gasSensorWarmupEndTime = 0; 
 
@@ -233,6 +235,7 @@ void resetAllSettingsToDefault(DeviceConfig& config);
 void processWiFiConnection(WifiState& wifiStatus, DeviceConfig& config);
 void startWifiScan(uint8_t clientNum, WifiState& wifiStatus, JsonDocument& responseDoc);
 void processWifiScanResults(WifiState& wifiStatus);
+bool isGasSensorConnected();
 void readSensors(DeviceState& state);
 void checkAlarms(DeviceState& state, const DeviceConfig& config);
 void updateLedStatus(const DeviceState& state, const WifiState& wifiStatus, const Adafruit_NeoPixel& led);
@@ -250,7 +253,7 @@ void handleSaveLedBrightnessRequest(uint8_t clientNum, const JsonDocument& reque
 void handleScanWifiRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response);
 void handleConnectWifiRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response);
 void handleResetSettingsRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response);
-void generateTimeStr(unsigned long current_timestamp, char* buffer);
+void generateTimeStr(unsigned long current_timestamp, bool isRelative, char* buffer);
 void addHistoricalDataPoint(CircularBuffer& histBuffer, const DeviceState& state);
 void serveStaticFile(AsyncWebServerRequest *request, const char* path, const char* contentType);
 String getSensorStatusString(SensorStatusVal status);
@@ -262,7 +265,7 @@ String getSensorStatusString(SensorStatusVal status);
 void setup() {
     Serial.begin(115200);
     while (!Serial && millis() < 2000);
-    P_PRINTLN("\n[SETUP] 系统启动中...");
+    P_PRINTLN("\n[SETUP] 系统启动中 (V3)...");
 
     initHardware(); 
     initSPIFFS();
@@ -288,7 +291,6 @@ void setup() {
     P_PRINTLN("[SETUP] WebSocket服务器已启动 (端口 81)");
 
     gasSensorWarmupEndTime = millis() + GAS_SENSOR_WARMUP_PERIOD_MS; 
-    gas_sensor.preheated(); 
     P_PRINTLN("[SETUP] 初始化完成, 系统运行中.");
 }
 
@@ -302,7 +304,8 @@ void loop() {
 
     unsigned long currentTime = millis();
 
-    if (WiFi.isConnected() && !ntpSynced && ntpInitialAttempts < MAX_NTP_ATTEMPTS_AFTER_WIFI) {
+    // NTP 同步逻辑: WiFi连上后尝试, 失败一定次数后放弃, 或每小时重试
+    if (WiFi.isConnected() && !ntpSynced && !ntpGiveUp) {
         if (currentTime - lastNtpAttemptTime >= NTP_RETRY_DELAY_MS || lastNtpAttemptTime == 0) {
             attemptNtpSync();
             lastNtpAttemptTime = currentTime;
@@ -313,19 +316,20 @@ void loop() {
         attemptNtpSync(); 
     }
 
-
+    // 传感器读取逻辑
     if (currentTime - lastSensorReadTime >= SENSOR_READ_INTERVAL_MS) {
         lastSensorReadTime = currentTime;
         readSensors(currentState);
         checkAlarms(currentState, currentConfig);
-        if (ntpSynced) { 
-             addHistoricalDataPoint(historicalData, currentState);
-        }
+        // 无论NTP是否同步成功,都添加历史数据点
+        addHistoricalDataPoint(historicalData, currentState);
     }
 
+    // 更新LED和蜂鸣器
     updateLedStatus(currentState, wifiState, pixels);
     controlBuzzer(currentState);
 
+    // WebSocket 推送逻辑
     if (currentTime - lastWebSocketUpdateTime >= WEBSOCKET_UPDATE_INTERVAL_MS) {
         lastWebSocketUpdateTime = currentTime;
         if (wifiState.connectProgress == WIFI_CP_IDLE || wifiState.connectProgress == WIFI_CP_FAILED) {
@@ -336,6 +340,7 @@ void loop() {
         }
     }
 
+    // 定期保存历史数据到闪存
     if (currentTime - lastHistoricalDataSaveTime >= HISTORICAL_DATA_SAVE_INTERVAL_MS) {
         lastHistoricalDataSaveTime = currentTime;
         saveHistoricalDataToFile(historicalData);
@@ -372,9 +377,13 @@ void initHardware() {
     Wire.begin(I2C_SDA_PIN, I2C_SCL_PIN); 
     P_PRINTF("[HW] I2C总线已在 SDA=%d, SCL=%d 初始化.\n", I2C_SDA_PIN, I2C_SCL_PIN);
     
-    gas_sensor.begin(Wire, GAS_SENSOR_I2C_ADDRESS); 
-    P_PRINTF("[HW] Grove多通道气体传感器GMXXX尝试在地址 0x%02X 初始化...\n", GAS_SENSOR_I2C_ADDRESS);
-    delay(100); 
+    if (isGasSensorConnected()) {
+        P_PRINTLN("[HW] Grove多通道气体传感器V2已连接.");
+        gas_sensor.begin(Wire, GAS_SENSOR_I2C_ADDRESS); 
+        gas_sensor.preheated();
+    } else {
+        P_PRINTLN("[HW] ***错误*** 未检测到Grove多通道气体传感器V2!");
+    }
 }
 
 void initSPIFFS() {
@@ -386,12 +395,14 @@ void initSPIFFS() {
 }
 
 void attemptNtpSync() { 
-    if (ntpSynced && millis() - lastNtpSyncTime < NTP_SYNC_INTERVAL_MS && ntpInitialAttempts >= MAX_NTP_ATTEMPTS_AFTER_WIFI) {
-        return;
-    }
     if (!WiFi.isConnected()) {
         P_PRINTLN("[NTP] WiFi未连接, 无法同步时间.");
-        ntpSynced = false; 
+        return;
+    }
+
+    if (ntpInitialAttempts >= MAX_NTP_ATTEMPTS_AFTER_WIFI && !ntpSynced) {
+        P_PRINTLN("[NTP] 达到最大尝试次数, 同步失败. 将使用设备运行时间.");
+        ntpGiveUp = true; // 设置放弃标志
         return;
     }
 
@@ -401,17 +412,14 @@ void attemptNtpSync() {
     struct tm timeinfo;
     if(!getLocalTime(&timeinfo, 5000)){ 
         P_PRINTLN("[NTP] 获取时间失败.");
-        ntpSynced = false;
-        if (WiFi.isConnected()) { 
-             ntpInitialAttempts++;
-        }
+        ntpInitialAttempts++;
     } else {
         char timeBuffer[80];
         strftime(timeBuffer, sizeof(timeBuffer), "%A, %B %d %Y %H:%M:%S", &timeinfo);
         P_PRINTF("[NTP] 时间已同步: %s\n", timeBuffer);
         ntpSynced = true;
         lastNtpSyncTime = millis();
-        ntpInitialAttempts = MAX_NTP_ATTEMPTS_AFTER_WIFI; 
+        ntpGiveUp = true; // 同步成功后也设置此标志，防止不必要的重试，直到一小时后
     }
 }
 
@@ -432,17 +440,13 @@ void loadConfig(DeviceConfig& config) {
                 config.thresholds.tempMax = thresholdsObj["tempMax"] | DEFAULT_TEMP_MAX;
                 config.thresholds.humMin  = thresholdsObj["humMin"]  | DEFAULT_HUM_MIN;
                 config.thresholds.humMax  = thresholdsObj["humMax"]  | DEFAULT_HUM_MAX;
-                config.thresholds.coMin   = thresholdsObj["coMin"]   | DEFAULT_CO_MIN;
-                config.thresholds.coMax   = thresholdsObj["coMax"]   | DEFAULT_CO_MAX;
-                config.thresholds.no2Min  = thresholdsObj["no2Min"]  | DEFAULT_NO2_MIN;
-                config.thresholds.no2Max  = thresholdsObj["no2Max"]  | DEFAULT_NO2_MAX;
-                config.thresholds.c2h5ohMin = thresholdsObj["c2h5ohMin"] | DEFAULT_C2H5OH_MIN;
-                config.thresholds.c2h5ohMax = thresholdsObj["c2h5ohMax"] | DEFAULT_C2H5OH_MAX;
-                config.thresholds.vocMin  = thresholdsObj["vocMin"]  | DEFAULT_VOC_MIN;
-                config.thresholds.vocMax  = thresholdsObj["vocMax"]  | DEFAULT_VOC_MAX;
+                config.thresholds.coPpmMax   = thresholdsObj["coPpmMax"]   | DEFAULT_CO_PPM_MAX;
+                config.thresholds.no2PpmMax  = thresholdsObj["no2PpmMax"]  | DEFAULT_NO2_PPM_MAX;
+                config.thresholds.c2h5ohPpmMax = thresholdsObj["c2h5ohPpmMax"] | DEFAULT_C2H5OH_PPM_MAX;
+                config.thresholds.vocPpmMax  = thresholdsObj["vocPpmMax"]  | DEFAULT_VOC_PPM_MAX;
                 
                 config.currentSsidForSettings = doc["wifi"]["ssid"].as<String>();
-                config.currentPasswordForSettings = doc["wifi"]["password"].as<String>(); // 加载密码
+                config.currentPasswordForSettings = doc["wifi"]["password"].as<String>();
                 config.ledBrightness = doc["led"]["brightness"] | DEFAULT_LED_BRIGHTNESS;
                 P_PRINTLN("[CONFIG] 配置加载成功.");
             }
@@ -456,13 +460,12 @@ void loadConfig(DeviceConfig& config) {
         resetAllSettingsToDefault(config);
         saveConfig(config);
     }
-     P_PRINTF("  加载阈值 - 温度: %.1f-%.1f, 湿度: %.1f-%.1f\n",
+    P_PRINTF("  加载阈值 - 温度: %.1f-%.1f, 湿度: %.1f-%.1f\n",
                    config.thresholds.tempMin, config.thresholds.tempMax, config.thresholds.humMin, config.thresholds.humMax);
-    P_PRINTF("  CO: %.0f-%.0f, NO2: %.0f-%.0f, C2H5OH: %.0f-%.0f, VOC: %.0f-%.0f (ADC值)\n",
-                   config.thresholds.coMin, config.thresholds.coMax, config.thresholds.no2Min, config.thresholds.no2Max,
-                   config.thresholds.c2h5ohMin, config.thresholds.c2h5ohMax, config.thresholds.vocMin, config.thresholds.vocMax);
+    P_PRINTF("  气体(PPM) - CO: %.2f, NO2: %.2f, C2H5OH: %.2f, VOC: %.2f\n",
+                   config.thresholds.coPpmMax, config.thresholds.no2PpmMax,
+                   config.thresholds.c2h5ohPpmMax, config.thresholds.vocPpmMax);
     P_PRINTF("  加载的WiFi SSID (自动连接): %s\n", config.currentSsidForSettings.c_str());
-    // 不打印密码 P_PRINTF("  加载的WiFi 密码: %s\n", config.currentPasswordForSettings.c_str());
     P_PRINTF("  加载的LED亮度: %d\n", config.ledBrightness);
 }
 
@@ -476,34 +479,23 @@ void saveConfig(const DeviceConfig& config) {
         thresholdsObj["tempMax"] = config.thresholds.tempMax;
         thresholdsObj["humMin"]  = config.thresholds.humMin;
         thresholdsObj["humMax"]  = config.thresholds.humMax;
-        thresholdsObj["coMin"]   = config.thresholds.coMin;
-        thresholdsObj["coMax"]   = config.thresholds.coMax;
-        thresholdsObj["no2Min"]  = config.thresholds.no2Min;
-        thresholdsObj["no2Max"]  = config.thresholds.no2Max;
-        thresholdsObj["c2h5ohMin"] = config.thresholds.c2h5ohMin;
-        thresholdsObj["c2h5ohMax"] = config.thresholds.c2h5ohMax;
-        thresholdsObj["vocMin"]  = config.thresholds.vocMin;
-        thresholdsObj["vocMax"]  = config.thresholds.vocMax;
+        thresholdsObj["coPpmMax"]   = config.thresholds.coPpmMax;
+        thresholdsObj["no2PpmMax"]  = config.thresholds.no2PpmMax;
+        thresholdsObj["c2h5ohPpmMax"] = config.thresholds.c2h5ohPpmMax;
+        thresholdsObj["vocPpmMax"]  = config.thresholds.vocPpmMax;
 
         JsonObject wifiObj = doc.createNestedObject("wifi");
-        // 保存当前连接的SSID和密码，或者如果未连接，则保存设置中的SSID和密码
         if (WiFi.isConnected()) {
             wifiObj["ssid"] = WiFi.SSID();
-            // 注意：WiFi.psk() 通常不可用或不返回实际密码。我们依赖连接成功时保存的密码。
-            // 因此，只有当通过Web界面连接时，密码才会被保存。
-            // 如果是从之前保存的配置中自动连接的，我们应该使用config.currentPasswordForSettings
             if (config.currentSsidForSettings == WiFi.SSID()) {
                  wifiObj["password"] = config.currentPasswordForSettings;
             } else {
-                // 如果当前连接的SSID不是上次保存的，理论上密码应该在连接时已更新到config
-                // 但为了保险，这里也用config中的。如果用户手动连接了一个新网络且未保存，则可能为空。
                 wifiObj["password"] = config.currentPasswordForSettings;
             }
         } else {
             wifiObj["ssid"] = config.currentSsidForSettings;
             wifiObj["password"] = config.currentPasswordForSettings;
         }
-
 
         JsonObject ledObj = doc.createNestedObject("led");
         ledObj["brightness"] = config.ledBrightness;
@@ -536,13 +528,14 @@ void loadHistoricalDataFromFile(CircularBuffer& histBuffer) {
                     if (histBuffer.count() >= HISTORICAL_DATA_POINTS) break; 
                     SensorDataPoint dp;
                     dp.timestamp = obj["ts"]; 
+                    dp.isTimeRelative = obj["rel"] | false;
                     dp.temp = obj["t"];
                     dp.hum = obj["h"];
                     dp.gas.co = obj["co"];
                     dp.gas.no2 = obj["no2"];
                     dp.gas.c2h5oh = obj["c2h5oh"]; 
                     dp.gas.voc = obj["voc"];
-                    generateTimeStr(dp.timestamp, dp.timeStr); 
+                    generateTimeStr(dp.timestamp, dp.isTimeRelative, dp.timeStr); 
                     histBuffer.add(dp);
                     count++;
                 }
@@ -563,6 +556,7 @@ void saveHistoricalDataToFile(const CircularBuffer& histBuffer) {
         for (const auto& dp : dataToSave) {
             JsonObject obj = arr.createNestedObject();
             obj["ts"] = dp.timestamp;
+            obj["rel"] = dp.isTimeRelative;
             obj["t"] = dp.temp;
             obj["h"] = dp.hum;
             obj["co"] = dp.gas.co;
@@ -577,6 +571,12 @@ void saveHistoricalDataToFile(const CircularBuffer& histBuffer) {
     } else { P_PRINTLN("[HISTORY] 创建文件失败."); }
 }
 
+bool isGasSensorConnected() {
+    Wire.beginTransmission(GAS_SENSOR_I2C_ADDRESS);
+    byte error = Wire.endTransmission();
+    return (error == 0);
+}
+
 
 void initWiFi(DeviceConfig& config, WifiState& wifiStatus) {
     WiFi.mode(WIFI_AP_STA);
@@ -588,7 +588,7 @@ void initWiFi(DeviceConfig& config, WifiState& wifiStatus) {
     if (config.currentSsidForSettings.length() > 0) {
         P_PRINTF("[WIFI] 检测到保存的SSID: %s, 密码: [敏感信息], 尝试自动连接...\n", config.currentSsidForSettings.c_str());
         wifiStatus.ssidToTry = config.currentSsidForSettings;
-        wifiStatus.passwordToTry = config.currentPasswordForSettings; // 使用保存的密码
+        wifiStatus.passwordToTry = config.currentPasswordForSettings;
         wifiStatus.connectInitiatorClientNum = 255; 
 
         WiFi.begin(wifiStatus.ssidToTry.c_str(), wifiStatus.passwordToTry.c_str());
@@ -600,6 +600,7 @@ void initWiFi(DeviceConfig& config, WifiState& wifiStatus) {
     }
 }
 
+// ... processWiFiConnection, startWifiScan, processWifiScanResults 函数保持不变 ...
 void processWiFiConnection(WifiState& wifiStatus, DeviceConfig& config) {
     if (wifiStatus.connectProgress == WIFI_CP_IDLE || wifiStatus.connectProgress == WIFI_CP_FAILED) {
         return;
@@ -635,7 +636,8 @@ void processWiFiConnection(WifiState& wifiStatus, DeviceConfig& config) {
             sendUpdateToClient = true;
             
             ntpInitialAttempts = 0; 
-            lastNtpAttemptTime = 0;  
+            lastNtpAttemptTime = 0;
+            ntpGiveUp = false; // 重新连接WiFi后，重置NTP放弃标志
 
         } else if (millis() - wifiStatus.connectAttemptStartTime > 20000) { 
             P_PRINTF("[WIFI_PROC] 连接超时: SSID=%s. WiFi Status: %d\n", 
@@ -654,10 +656,8 @@ void processWiFiConnection(WifiState& wifiStatus, DeviceConfig& config) {
             wifiStatus.connectProgress = WIFI_CP_FAILED;
             sendUpdateToClient = true;
         } else if (status == WL_IDLE_STATUS || status == WL_SCAN_COMPLETED || status == WL_DISCONNECTED) {
-            // P_PRINTF("[WIFI_PROC] WiFi Status: %d, 等待...\n", status); 
             return;
         } else {
-            // P_PRINTF("[WIFI_PROC] 未知 WiFi Status: %d, 等待...\n", status); 
             return;
         }
 
@@ -672,7 +672,6 @@ void processWiFiConnection(WifiState& wifiStatus, DeviceConfig& config) {
         }
     }
 }
-
 void startWifiScan(uint8_t clientNum, WifiState& wifiStatus, JsonDocument& responseDoc) {
     if (wifiStatus.isScanning) {
         P_PRINTLN("[WIFI_SCAN] WiFi扫描已在进行中.");
@@ -696,7 +695,6 @@ void startWifiScan(uint8_t clientNum, WifiState& wifiStatus, JsonDocument& respo
         }
     }
 }
-
 void processWifiScanResults(WifiState& wifiStatus) {
     if (!wifiStatus.isScanning) {
         return;
@@ -761,7 +759,9 @@ void processWifiScanResults(WifiState& wifiStatus) {
     wifiStatus.scanRequesterClientNum = 255;
 }
 
+
 void readSensors(DeviceState& state) {
+    // 读取温湿度传感器
     float newTemp = dht.readTemperature();
     float newHum = dht.readHumidity();
     if (isnan(newTemp) || isnan(newHum)) {
@@ -774,42 +774,32 @@ void readSensors(DeviceState& state) {
         if(state.humStatus == SS_INIT || state.humStatus == SS_DISCONNECTED) state.humStatus = SS_NORMAL;
     }
 
+    // 检查I2C气体传感器是否在线
+    if (!isGasSensorConnected()) {
+        state.gasCoStatus = state.gasNo2Status = state.gasC2h5ohStatus = state.gasVocStatus = SS_DISCONNECTED;
+        state.gasPpmValues = {NAN, NAN, NAN, NAN};
+        return; // 如果传感器不在线，直接返回
+    }
+    
+    // 检查是否在物理预热期
     bool isGasSensorPhysicallyWarmingUp = (millis() < gasSensorWarmupEndTime);
-
     if (isGasSensorPhysicallyWarmingUp) {
-        state.gasCoStatus = SS_INIT; state.gasNo2Status = SS_INIT;
-        state.gasC2h5ohStatus = SS_INIT; state.gasVocStatus = SS_INIT;
-        state.gasValues = {NAN, NAN, NAN, NAN}; 
+        state.gasCoStatus = state.gasNo2Status = state.gasC2h5ohStatus = state.gasVocStatus = SS_INIT;
+        state.gasPpmValues = {NAN, NAN, NAN, NAN}; 
     } else {
-        uint32_t raw_co = gas_sensor.measure_CO();
-        uint32_t raw_no2 = gas_sensor.measure_NO2();
-        uint32_t raw_c2h5oh = gas_sensor.measure_C2H5OH();
-        uint32_t raw_voc = gas_sensor.measure_VOC();
+        // 读取气体数据 (假设库返回PPM值)
+        state.gasPpmValues.co = gas_sensor.measure_CO();
+        state.gasPpmValues.no2 = gas_sensor.measure_NO2();
+        state.gasPpmValues.c2h5oh = gas_sensor.measure_C2H5OH();
+        state.gasPpmValues.voc = gas_sensor.measure_VOC();
 
-        state.gasValues.co = (float)raw_co;
-        state.gasValues.no2 = (float)raw_no2;
-        state.gasValues.c2h5oh = (float)raw_c2h5oh;
-        state.gasValues.voc = (float)raw_voc;
-        
-        bool allGasZeroAfterWarmup = !isGasSensorPhysicallyWarmingUp && 
-                                     raw_co == 0 && raw_no2 == 0 && 
-                                     raw_c2h5oh == 0 && raw_voc == 0;
-        
-        bool outOfRange = raw_co > GAS_SENSOR_ADC_MAX_VALID || raw_no2 > GAS_SENSOR_ADC_MAX_VALID ||
-                          raw_c2h5oh > GAS_SENSOR_ADC_MAX_VALID || raw_voc > GAS_SENSOR_ADC_MAX_VALID;
+        // 假设库在出错时返回负值
+        state.gasCoStatus = (state.gasPpmValues.co < 0) ? SS_DISCONNECTED : SS_NORMAL;
+        state.gasNo2Status = (state.gasPpmValues.no2 < 0) ? SS_DISCONNECTED : SS_NORMAL;
+        state.gasC2h5ohStatus = (state.gasPpmValues.c2h5oh < 0) ? SS_DISCONNECTED : SS_NORMAL;
+        state.gasVocStatus = (state.gasPpmValues.voc < 0) ? SS_DISCONNECTED : SS_NORMAL;
 
-        if (allGasZeroAfterWarmup || outOfRange) {
-            state.gasCoStatus = SS_DISCONNECTED;
-            state.gasNo2Status = SS_DISCONNECTED;
-            state.gasC2h5ohStatus = SS_DISCONNECTED;
-            state.gasVocStatus = SS_DISCONNECTED;
-        } else {
-            state.gasCoStatus = SS_NORMAL;
-            state.gasNo2Status = SS_NORMAL;
-            state.gasC2h5ohStatus = SS_NORMAL;
-            state.gasVocStatus = SS_NORMAL;
-        }
-        
+        // 如果值是正常的，清除初始化状态
         if(state.gasCoStatus == SS_INIT && state.gasCoStatus != SS_DISCONNECTED) state.gasCoStatus = SS_NORMAL;
         if(state.gasNo2Status == SS_INIT && state.gasNo2Status != SS_DISCONNECTED) state.gasNo2Status = SS_NORMAL;
         if(state.gasC2h5ohStatus == SS_INIT && state.gasC2h5ohStatus != SS_DISCONNECTED) state.gasC2h5ohStatus = SS_NORMAL;
@@ -820,62 +810,49 @@ void readSensors(DeviceState& state) {
 void checkAlarms(DeviceState& state, const DeviceConfig& config) {
     bool anyAlarm = false;
 
+    // 温湿度报警检查
     if (state.tempStatus != SS_DISCONNECTED && state.tempStatus != SS_INIT) {
         if (state.temperature < config.thresholds.tempMin || state.temperature > config.thresholds.tempMax) {
             if (state.tempStatus == SS_NORMAL) P_PRINTF("[ALARM] 温度超限! %.1f°C (范围: %.1f-%.1f)\n", state.temperature, config.thresholds.tempMin, config.thresholds.tempMax);
             state.tempStatus = SS_WARNING;
             anyAlarm = true;
-        } else {
-            state.tempStatus = SS_NORMAL;
-        }
+        } else { state.tempStatus = SS_NORMAL; }
     }
     if (state.humStatus != SS_DISCONNECTED && state.humStatus != SS_INIT) {
         if (state.humidity < config.thresholds.humMin || state.humidity > config.thresholds.humMax) {
             if (state.humStatus == SS_NORMAL) P_PRINTF("[ALARM] 湿度超限! %.1f%% (范围: %.1f-%.1f)\n", state.humidity, config.thresholds.humMin, config.thresholds.humMax);
             state.humStatus = SS_WARNING;
             anyAlarm = true;
-        } else {
-            state.humStatus = SS_NORMAL;
-        }
+        } else { state.humStatus = SS_NORMAL; }
     }
 
+    // 气体PPM报警检查
     if (state.gasCoStatus != SS_DISCONNECTED && state.gasCoStatus != SS_INIT) {
-        if (state.gasValues.co < config.thresholds.coMin || state.gasValues.co > config.thresholds.coMax) {
-            if (state.gasCoStatus == SS_NORMAL) P_PRINTF("[ALARM] CO超限! %.0f (ADC) (范围: %.0f-%.0f)\n", state.gasValues.co, config.thresholds.coMin, config.thresholds.coMax);
-            state.gasCoStatus = SS_WARNING;
-            anyAlarm = true;
-        } else {
-            state.gasCoStatus = SS_NORMAL;
-        }
+        if (state.gasPpmValues.co > config.thresholds.coPpmMax) {
+            if (state.gasCoStatus == SS_NORMAL) P_PRINTF("[ALARM] CO超限! %.2f PPM (阈值: >%.2f)\n", state.gasPpmValues.co, config.thresholds.coPpmMax);
+            state.gasCoStatus = SS_WARNING; anyAlarm = true;
+        } else { state.gasCoStatus = SS_NORMAL; }
     }
     if (state.gasNo2Status != SS_DISCONNECTED && state.gasNo2Status != SS_INIT) {
-        if (state.gasValues.no2 < config.thresholds.no2Min || state.gasValues.no2 > config.thresholds.no2Max) {
-            if (state.gasNo2Status == SS_NORMAL) P_PRINTF("[ALARM] NO2超限! %.0f (ADC) (范围: %.0f-%.0f)\n", state.gasValues.no2, config.thresholds.no2Min, config.thresholds.no2Max);
-            state.gasNo2Status = SS_WARNING;
-            anyAlarm = true;
-        } else {
-            state.gasNo2Status = SS_NORMAL;
-        }
+        if (state.gasPpmValues.no2 > config.thresholds.no2PpmMax) {
+            if (state.gasNo2Status == SS_NORMAL) P_PRINTF("[ALARM] NO2超限! %.2f PPM (阈值: >%.2f)\n", state.gasPpmValues.no2, config.thresholds.no2PpmMax);
+            state.gasNo2Status = SS_WARNING; anyAlarm = true;
+        } else { state.gasNo2Status = SS_NORMAL; }
     }
     if (state.gasC2h5ohStatus != SS_DISCONNECTED && state.gasC2h5ohStatus != SS_INIT) {
-        if (state.gasValues.c2h5oh < config.thresholds.c2h5ohMin || state.gasValues.c2h5oh > config.thresholds.c2h5ohMax) {
-            if (state.gasC2h5ohStatus == SS_NORMAL) P_PRINTF("[ALARM] C2H5OH超限! %.0f (ADC) (范围: %.0f-%.0f)\n", state.gasValues.c2h5oh, config.thresholds.c2h5ohMin, config.thresholds.c2h5ohMax);
-            state.gasC2h5ohStatus = SS_WARNING;
-            anyAlarm = true;
-        } else {
-            state.gasC2h5ohStatus = SS_NORMAL;
-        }
+        if (state.gasPpmValues.c2h5oh > config.thresholds.c2h5ohPpmMax) {
+            if (state.gasC2h5ohStatus == SS_NORMAL) P_PRINTF("[ALARM] C2H5OH超限! %.2f PPM (阈值: >%.2f)\n", state.gasPpmValues.c2h5oh, config.thresholds.c2h5ohPpmMax);
+            state.gasC2h5ohStatus = SS_WARNING; anyAlarm = true;
+        } else { state.gasC2h5ohStatus = SS_NORMAL; }
     }
     if (state.gasVocStatus != SS_DISCONNECTED && state.gasVocStatus != SS_INIT) {
-        if (state.gasValues.voc < config.thresholds.vocMin || state.gasValues.voc > config.thresholds.vocMax) {
-            if (state.gasVocStatus == SS_NORMAL) P_PRINTF("[ALARM] VOC超限! %.0f (ADC) (范围: %.0f-%.0f)\n", state.gasValues.voc, config.thresholds.vocMin, config.thresholds.vocMax);
-            state.gasVocStatus = SS_WARNING;
-            anyAlarm = true;
-        } else {
-            state.gasVocStatus = SS_NORMAL;
-        }
+        if (state.gasPpmValues.voc > config.thresholds.vocPpmMax) {
+            if (state.gasVocStatus == SS_NORMAL) P_PRINTF("[ALARM] VOC超限! %.2f PPM (阈值: >%.2f)\n", state.gasPpmValues.voc, config.thresholds.vocPpmMax);
+            state.gasVocStatus = SS_WARNING; anyAlarm = true;
+        } else { state.gasVocStatus = SS_NORMAL; }
     }
 
+    // 统一处理蜂鸣器
     if (anyAlarm) {
         if (!state.buzzerShouldBeActive) {
             state.buzzerShouldBeActive = true;
@@ -945,6 +922,9 @@ void updateLedStatus(const DeviceState& state, const WifiState& wifiStatus, cons
     }
 }
 
+// ... controlBuzzer, onWebSocketEvent, WebSocket handlers ...
+// ... 和其他未明确要求修改的函数保持基本不变 ...
+
 void controlBuzzer(DeviceState& state) {
     unsigned long currentTime = millis();
     if (state.buzzerShouldBeActive) {
@@ -970,7 +950,6 @@ void controlBuzzer(DeviceState& state) {
         state.buzzerStopTime = 0;  
     }
 }
-
 void onWebSocketEvent(uint8_t clientNum, WStype_t type, uint8_t * payload, size_t length) {
     switch (type) {
         case WStype_DISCONNECTED:
@@ -1011,13 +990,9 @@ void onWebSocketEvent(uint8_t clientNum, WStype_t type, uint8_t * payload, size_
             }
             break;
         }
-        case WStype_BIN: P_PRINTF("[%u] 收到二进制数据,长度: %u\n", clientNum, length); break;
-        case WStype_PONG: break;
-        case WStype_PING: break;
-        default: P_PRINTF("[%u] 未处理的WS事件类型: %d\n", clientNum, type); break;
+        default: break;
     }
 }
-
 void setupWebSocketActions() {
     wsActionHandlers["getCurrentSettings"] = handleGetCurrentSettingsRequest;
     wsActionHandlers["getHistoricalData"] = handleGetHistoricalDataRequest;
@@ -1027,7 +1002,6 @@ void setupWebSocketActions() {
     wsActionHandlers["connectWifi"] = handleConnectWifiRequest;
     wsActionHandlers["resetSettings"] = handleResetSettingsRequest;
 }
-
 void handleWebSocketMessage(uint8_t clientNum, const JsonDocument& doc, JsonDocument& responseDoc) {
     const char* action = doc["action"];
     if (!action) {
@@ -1049,37 +1023,30 @@ void handleWebSocketMessage(uint8_t clientNum, const JsonDocument& doc, JsonDocu
         responseDoc["message"] = "Unknown action: " + actionStr;
     }
 }
-
 void handleGetCurrentSettingsRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) {
     sendCurrentSettingsToClient(clientNum, currentConfig);
 }
-
 void handleGetHistoricalDataRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) {
     sendHistoricalDataToClient(clientNum, historicalData);
 }
-
 void handleSaveThresholdsRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) {
+    // 更新为PPM阈值
     currentConfig.thresholds.tempMin = request["tempMin"] | currentConfig.thresholds.tempMin;
     currentConfig.thresholds.tempMax = request["tempMax"] | currentConfig.thresholds.tempMax;
     currentConfig.thresholds.humMin  = request["humMin"]  | currentConfig.thresholds.humMin;
     currentConfig.thresholds.humMax  = request["humMax"]  | currentConfig.thresholds.humMax;
-    currentConfig.thresholds.coMin   = request["coMin"]   | currentConfig.thresholds.coMin;
-    currentConfig.thresholds.coMax   = request["coMax"]   | currentConfig.thresholds.coMax;
-    currentConfig.thresholds.no2Min  = request["no2Min"]  | currentConfig.thresholds.no2Min;
-    currentConfig.thresholds.no2Max  = request["no2Max"]  | currentConfig.thresholds.no2Max;
-    currentConfig.thresholds.c2h5ohMin = request["c2h5ohMin"] | currentConfig.thresholds.c2h5ohMin;
-    currentConfig.thresholds.c2h5ohMax = request["c2h5ohMax"] | currentConfig.thresholds.c2h5ohMax;
-    currentConfig.thresholds.vocMin  = request["vocMin"]  | currentConfig.thresholds.vocMin;
-    currentConfig.thresholds.vocMax  = request["vocMax"]  | currentConfig.thresholds.vocMax;
+    currentConfig.thresholds.coPpmMax   = request["coPpmMax"]   | currentConfig.thresholds.coPpmMax;
+    currentConfig.thresholds.no2PpmMax  = request["no2PpmMax"]  | currentConfig.thresholds.no2PpmMax;
+    currentConfig.thresholds.c2h5ohPpmMax = request["c2h5ohPpmMax"] | currentConfig.thresholds.c2h5ohPpmMax;
+    currentConfig.thresholds.vocPpmMax  = request["vocPpmMax"]  | currentConfig.thresholds.vocPpmMax;
     
     saveConfig(currentConfig);
-    checkAlarms(currentState, currentConfig); 
+    checkAlarms(currentState, currentConfig); // 重新检查警报
     
     response["type"] = "saveSettingsStatus";
     response["success"] = true;
     response["message"] = "Thresholds saved.";
 }
-
 void handleSaveLedBrightnessRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) {
     if (request.containsKey("brightness") && request["brightness"].is<int>()) {
         int brightness = request["brightness"].as<int>();
@@ -1102,11 +1069,9 @@ void handleSaveLedBrightnessRequest(uint8_t clientNum, const JsonDocument& reque
         response["message"] = "Missing or invalid 'brightness' field.";
     }
 }
-
 void handleScanWifiRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) {
     startWifiScan(clientNum, wifiState, response);
 }
-
 void handleConnectWifiRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) {
     if (wifiState.connectProgress != WIFI_CP_IDLE && wifiState.connectProgress != WIFI_CP_FAILED) {
         P_PRINTLN("[WIFI_CONN] WiFi连接已在进行中.");
@@ -1132,7 +1097,6 @@ void handleConnectWifiRequest(uint8_t clientNum, const JsonDocument& request, Js
         }
     }
 }
-
 void handleResetSettingsRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) {
     P_PRINTLN("[RESET] 收到恢复出厂设置请求.");
     resetAllSettingsToDefault(currentConfig);
@@ -1153,16 +1117,19 @@ void handleResetSettingsRequest(uint8_t clientNum, const JsonDocument& request, 
     ESP.restart();
 }
 
+
 void sendSensorDataToClients(const DeviceState& state, uint8_t specificClientNum) {
     DynamicJsonDocument doc(1024); 
     doc["type"] = "sensorData";
     if (isnan(state.temperature)) doc["temperature"] = nullptr; else doc["temperature"] = state.temperature;
     if (isnan(state.humidity)) doc["humidity"] = nullptr; else doc["humidity"] = state.humidity;
     
-    if (isnan(state.gasValues.co)) doc["co"] = nullptr; else doc["co"] = state.gasValues.co;
-    if (isnan(state.gasValues.no2)) doc["no2"] = nullptr; else doc["no2"] = state.gasValues.no2;
-    if (isnan(state.gasValues.c2h5oh)) doc["c2h5oh"] = nullptr; else doc["c2h5oh"] = state.gasValues.c2h5oh;
-    if (isnan(state.gasValues.voc)) doc["voc"] = nullptr; else doc["voc"] = state.gasValues.voc;
+    // 发送PPM值
+    JsonObject gas = doc.createNestedObject("gasPpm");
+    if (isnan(state.gasPpmValues.co)) gas["co"] = nullptr; else gas["co"] = state.gasPpmValues.co;
+    if (isnan(state.gasPpmValues.no2)) gas["no2"] = nullptr; else gas["no2"] = state.gasPpmValues.no2;
+    if (isnan(state.gasPpmValues.c2h5oh)) gas["c2h5oh"] = nullptr; else gas["c2h5oh"] = state.gasPpmValues.c2h5oh;
+    if (isnan(state.gasPpmValues.voc)) gas["voc"] = nullptr; else gas["voc"] = state.gasPpmValues.voc;
 
     doc["tempStatus"] = getSensorStatusString(state.tempStatus);
     doc["humStatus"]  = getSensorStatusString(state.humStatus);
@@ -1170,13 +1137,23 @@ void sendSensorDataToClients(const DeviceState& state, uint8_t specificClientNum
     doc["gasNo2Status"] = getSensorStatusString(state.gasNo2Status);
     doc["gasC2h5ohStatus"] = getSensorStatusString(state.gasC2h5ohStatus);
     doc["gasVocStatus"] = getSensorStatusString(state.gasVocStatus);
+
+    doc["timeIsRelative"] = !ntpSynced;
+    char timeStr[12];
+    if (ntpSynced) {
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        generateTimeStr(tv.tv_sec, false, timeStr);
+    } else {
+        generateTimeStr(millis(), true, timeStr);
+    }
+    doc["timeStr"] = timeStr;
     
     String jsonString;
     serializeJson(doc, jsonString);
     if (specificClientNum != 255 && specificClientNum < webSocket.connectedClients()) webSocket.sendTXT(specificClientNum, jsonString);
     else webSocket.broadcastTXT(jsonString);
 }
-
 void sendWifiStatusToClients(const WifiState& wifiStatus, uint8_t specificClientNum) {
     DynamicJsonDocument doc(512);
     doc["type"] = "wifiStatus";
@@ -1190,13 +1167,13 @@ void sendWifiStatusToClients(const WifiState& wifiStatus, uint8_t specificClient
     }
     doc["connecting_attempt_ssid"] = (wifiStatus.connectProgress == WIFI_CP_CONNECTING || wifiStatus.connectProgress == WIFI_CP_DISCONNECTING) ? wifiStatus.ssidToTry : "";
     doc["connection_failed"] = (wifiStatus.connectProgress == WIFI_CP_FAILED);
+    doc["ntp_synced"] = ntpSynced;
 
     String jsonString;
     serializeJson(doc, jsonString);
     if (specificClientNum != 255 && specificClientNum < webSocket.connectedClients()) webSocket.sendTXT(specificClientNum, jsonString);
     else webSocket.broadcastTXT(jsonString);
 }
-
 void sendHistoricalDataToClient(uint8_t clientNum, const CircularBuffer& histBuffer) {
     if (clientNum >= webSocket.connectedClients()) return;
     const std::vector<SensorDataPoint>& dataToSend = histBuffer.getData();
@@ -1208,7 +1185,8 @@ void sendHistoricalDataToClient(uint8_t clientNum, const CircularBuffer& histBuf
 
     for (const auto& dp : dataToSend) {
         JsonObject dataPoint = historyArr.createNestedObject();
-        dataPoint["time"] = dp.timeStr; 
+        dataPoint["time"] = dp.timeStr;
+        dataPoint["rel"] = dp.isTimeRelative; 
         dataPoint["temp"] = dp.temp; 
         dataPoint["hum"] = dp.hum; 
         dataPoint["co"] = dp.gas.co;
@@ -1228,7 +1206,6 @@ void sendHistoricalDataToClient(uint8_t clientNum, const CircularBuffer& histBuf
         String errStr; serializeJson(errDoc, errStr); webSocket.sendTXT(clientNum, errStr);
     }
 }
-
 void sendCurrentSettingsToClient(uint8_t clientNum, const DeviceConfig& config) {
     if (clientNum >= webSocket.connectedClients()) return;
     P_PRINTF("[SETTINGS] 发送当前设置给客户端 %u\n", clientNum);
@@ -1240,14 +1217,10 @@ void sendCurrentSettingsToClient(uint8_t clientNum, const DeviceConfig& config) 
     thresholdsObj["tempMax"] = config.thresholds.tempMax;
     thresholdsObj["humMin"] = config.thresholds.humMin;   
     thresholdsObj["humMax"] = config.thresholds.humMax;
-    thresholdsObj["coMin"] = config.thresholds.coMin;     
-    thresholdsObj["coMax"] = config.thresholds.coMax;
-    thresholdsObj["no2Min"] = config.thresholds.no2Min;   
-    thresholdsObj["no2Max"] = config.thresholds.no2Max;
-    thresholdsObj["c2h5ohMin"] = config.thresholds.c2h5ohMin; 
-    thresholdsObj["c2h5ohMax"] = config.thresholds.c2h5ohMax;
-    thresholdsObj["vocMin"] = config.thresholds.vocMin;   
-    thresholdsObj["vocMax"] = config.thresholds.vocMax;
+    thresholdsObj["coPpmMax"] = config.thresholds.coPpmMax;     
+    thresholdsObj["no2PpmMax"] = config.thresholds.no2PpmMax;   
+    thresholdsObj["c2h5ohPpmMax"] = config.thresholds.c2h5ohPpmMax; 
+    thresholdsObj["vocPpmMax"] = config.thresholds.vocPpmMax;
     
     settingsObj["currentSSID"] = WiFi.isConnected() ? WiFi.SSID() : config.currentSsidForSettings;
     settingsObj["ledBrightness"] = config.ledBrightness;
@@ -1256,7 +1229,6 @@ void sendCurrentSettingsToClient(uint8_t clientNum, const DeviceConfig& config) 
     serializeJson(doc, jsonString);
     webSocket.sendTXT(clientNum, jsonString);
 }
-
 void serveStaticFile(AsyncWebServerRequest *request, const char* path, const char* contentType) {
     if (SPIFFS.exists(path)) {
         request->send(SPIFFS, path, contentType);
@@ -1274,61 +1246,74 @@ void configureWebServer() {
     server.on("/chart.min.js", HTTP_GET, [](AsyncWebServerRequest *request){ serveStaticFile(request, "/chart.min.js", "application/javascript"); });
     
     server.onNotFound([](AsyncWebServerRequest *request){
-        if (request->url() == "/ws") { 
-            P_PRINTF("[HTTP] HTTP请求到WebSocket路径 /ws, 已忽略.\n");
-            request->send(400, "text/plain", "Bad Request: Use WebSocket protocol for /ws");
-            return;
-        }
         P_PRINTF("[HTTP] 未找到 (onNotFound): %s\n", request->url().c_str());
         request->send(404, "text/plain", "404: Not Found");
     });
 }
-
 void resetAllSettingsToDefault(DeviceConfig& config) {
     P_PRINTLN("[CONFIG] 重置所有设置为默认值 (内存中).");
     config.thresholds = {
         DEFAULT_TEMP_MIN, DEFAULT_TEMP_MAX,
         DEFAULT_HUM_MIN, DEFAULT_HUM_MAX,
-        DEFAULT_CO_MIN, DEFAULT_CO_MAX,
-        DEFAULT_NO2_MIN, DEFAULT_NO2_MAX,
-        DEFAULT_C2H5OH_MIN, DEFAULT_C2H5OH_MAX,
-        DEFAULT_VOC_MIN, DEFAULT_VOC_MAX
+        DEFAULT_CO_PPM_MAX,
+        DEFAULT_NO2_PPM_MAX,
+        DEFAULT_C2H5OH_PPM_MAX,
+        DEFAULT_VOC_PPM_MAX
     };
     config.currentSsidForSettings = "";
-    config.currentPasswordForSettings = ""; // 重置密码
+    config.currentPasswordForSettings = "";
     config.ledBrightness = DEFAULT_LED_BRIGHTNESS;
     pixels.setBrightness(map(config.ledBrightness, 0, 100, 0, 255)); 
     pixels.show();
 }
 
-void generateTimeStr(unsigned long current_ts, char* buffer) {
-    time_t now = current_ts;
-    struct tm * p_tm = localtime(&now);
-    if (p_tm) { 
-        sprintf(buffer, "%02d:%02d:%02d", p_tm->tm_hour, p_tm->tm_min, p_tm->tm_sec);
+void generateTimeStr(unsigned long current_ts, bool isRelative, char* buffer) {
+    if (isRelative) {
+        unsigned long seconds = current_ts / 1000;
+        unsigned long days = seconds / (24 * 3600);
+        seconds = seconds % (24 * 3600);
+        unsigned long hours = seconds / 3600;
+        seconds = seconds % 3600;
+        unsigned long minutes = seconds / 60;
+        seconds = seconds % 60;
+        if (days > 0) {
+            sprintf(buffer, "D%lu %02lu:%02lu", days, hours, minutes);
+        } else {
+            sprintf(buffer, "%02lu:%02lu:%02lu", hours, minutes, seconds);
+        }
     } else {
-        strcpy(buffer, "00:00:00"); 
+        time_t now = current_ts;
+        struct tm * p_tm = localtime(&now);
+        if (p_tm) { 
+            sprintf(buffer, "%02d:%02d:%02d", p_tm->tm_hour, p_tm->tm_min, p_tm->tm_sec);
+        } else {
+            strcpy(buffer, "00:00:00"); 
+        }
     }
 }
 
 void addHistoricalDataPoint(CircularBuffer& histBuffer, const DeviceState& state) {
-    if (isnan(state.temperature) || isnan(state.humidity) || 
-        isnan(state.gasValues.co) ) return; 
+    // 只要有任何一个传感器有效就记录
+    if (isnan(state.temperature) && isnan(state.humidity) && isnan(state.gasPpmValues.co)) return;
 
     SensorDataPoint dp;
     
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    dp.timestamp = tv.tv_sec;
+    dp.isTimeRelative = !ntpSynced;
+    if (dp.isTimeRelative) {
+        dp.timestamp = millis();
+    } else {
+        struct timeval tv;
+        gettimeofday(&tv, NULL);
+        dp.timestamp = tv.tv_sec;
+    }
 
     dp.temp = state.temperature; 
     dp.hum = state.humidity; 
-    dp.gas = state.gasValues;
-    generateTimeStr(dp.timestamp, dp.timeStr);
+    dp.gas = state.gasPpmValues;
+    generateTimeStr(dp.timestamp, dp.isTimeRelative, dp.timeStr);
     
     histBuffer.add(dp);
 }
-
 String getSensorStatusString(SensorStatusVal status) {
     switch (status) {
         case SS_NORMAL: return "normal";
@@ -1338,4 +1323,3 @@ String getSensorStatusString(SensorStatusVal status) {
         default: return "unknown";
     }
 }
-

@@ -4,7 +4,7 @@
 // ==========================================================================
 // == WiFi 配置 ==
 // ==========================================================================
-#define WIFI_AP_SSID "ESP32_Sensor_Hub_V2" // AP模式下的SSID
+#define WIFI_AP_SSID "ESP32_Sensor_Hub_V3" // AP模式下的SSID
 #define WIFI_AP_PASSWORD ""               // AP模式下的密码 (空表示开放)
 #define WIFI_AP_CHANNEL 1                 // AP模式下的WiFi信道
 #define WIFI_AP_MAX_CONNECTIONS 4         // AP模式下的最大连接数
@@ -14,18 +14,18 @@
 // ==========================================================================
 #define NTP_SERVER1 "pool.ntp.org"
 #define NTP_SERVER2 "time.nist.gov"
-#define GMT_OFFSET_SEC 3600 * 8     // 时区偏移量 (例如 GMT+8 为 3600 * 8)
+#define GMT_OFFSET_SEC 3600 * 2     // 时区偏移量 (例如 GMT+8 为 3600 * 8)
 #define DAYLIGHT_OFFSET_SEC 0       // 夏令时偏移量 (秒)
 #define MAX_NTP_ATTEMPTS_AFTER_WIFI 5 // WiFi连接后NTP的最大尝试次数
 #define NTP_RETRY_DELAY_MS 10000      // WiFi连接后NTP失败的重试间隔
-#define NTP_SYNC_INTERVAL_MS 3600000UL // NTP每小时同步间隔 (毫秒) <--- 添加UL后缀确保为无符号长整型
+#define NTP_SYNC_INTERVAL_MS 3600000UL // NTP每小时同步间隔 (毫秒)
 
 // ==========================================================================
 // == I2C 引脚定义 (ESP32-S3 DevKitM-1 默认 Wire) ==
 // ==========================================================================
 #define I2C_SDA_PIN 8  // ESP32-S3 默认 I2C SDA
 #define I2C_SCL_PIN 9  // ESP32-S3 默认 I2C SCL
-#define GAS_SENSOR_I2C_ADDRESS 0x08 // Grove Multichannel Gas Sensor GMXXX 默认地址
+#define GAS_SENSOR_I2C_ADDRESS 0x08 // Grove Multichannel Gas Sensor V2 默认地址
 
 // ==========================================================================
 // == 传感器引脚定义 ==
@@ -45,14 +45,10 @@
 // ==========================================================================
 // == 气体传感器预热时间 ==
 // ==========================================================================
-#define GAS_SENSOR_WARMUP_PERIOD_MS 60000 // 气体传感器物理预热时间 (毫秒, 例如60秒)
-#define GAS_SENSOR_ADC_MAX_VALID 1023 // 气体传感器ADC读数的合理上限 (10-bit ADC)
-
+#define GAS_SENSOR_WARMUP_PERIOD_MS 60000 // 气体传感器物理预热时间 (毫秒, 60秒)
 
 // ==========================================================================
-// == 默认报警阈值 ==
-// !! 注意: 下列气体阈值为传感器返回的原始ADC值。
-// !! GMXXX库的ADC分辨率通常为10位 (0-1023)。
+// == 默认报警阈值 (气体单位已改为PPM) ==
 // ==========================================================================
 // 温度 (°C)
 #define DEFAULT_TEMP_MIN 10.0f
@@ -60,21 +56,17 @@
 // 湿度 (%)
 #define DEFAULT_HUM_MIN 30.0f
 #define DEFAULT_HUM_MAX 70.0f
-// 气体浓度 (ADC值)
-#define DEFAULT_CO_MIN 0       // 一氧化碳 (CO) - ADC值
-#define DEFAULT_CO_MAX 700     // 示例ADC阈值
-#define DEFAULT_NO2_MIN 0      // 二氧化氮 (NO2) - ADC值
-#define DEFAULT_NO2_MAX 500    // 示例ADC阈值
-#define DEFAULT_C2H5OH_MIN 0   // 乙醇 (C2H5OH) - ADC值
-#define DEFAULT_C2H5OH_MAX 600 // 示例ADC阈值
-#define DEFAULT_VOC_MIN 0      // 挥发性有机化合物 (VOC) - ADC值
-#define DEFAULT_VOC_MAX 550    // 示例ADC阈值
+// 气体浓度 (PPM) - 注意: 这些是最大值阈值
+#define DEFAULT_CO_PPM_MAX 50.0f       // 一氧化碳 (CO) - PPM
+#define DEFAULT_NO2_PPM_MAX 5.0f       // 二氧化氮 (NO2) - PPM
+#define DEFAULT_C2H5OH_PPM_MAX 1000.0f // 乙醇 (C2H5OH) - PPM
+#define DEFAULT_VOC_PPM_MAX 10.0f      // 挥发性有机化合物 (VOC) - PPM
 
 // ==========================================================================
 // == SPIFFS 文件系统配置 ==
 // ==========================================================================
-#define SETTINGS_FILE "/settings_gm.json"        // 配置文件名
-#define HISTORICAL_DATA_FILE "/history_gm.json"  // 历史数据文件名
+#define SETTINGS_FILE "/settings_v3.json"        // 配置文件名
+#define HISTORICAL_DATA_FILE "/history_v3.json"  // 历史数据文件名
 
 // ==========================================================================
 // == 数据和更新频率 ==
@@ -82,7 +74,7 @@
 #define SENSOR_READ_INTERVAL_MS 2000       // 传感器读取间隔 (毫秒)
 #define WEBSOCKET_UPDATE_INTERVAL_MS 2000  // WebSocket 数据更新间隔 (毫秒)
 #define HISTORICAL_DATA_SAVE_INTERVAL_MS 300000UL // 历史数据保存到SPIFFS的间隔 (5分钟)
-#define HISTORICAL_DATA_POINTS 90          // 存储的历史数据点数量 (例如 90个点 * 2秒/点 = 3分钟数据)
+#define HISTORICAL_DATA_POINTS 90          // 存储的历史数据点数量
 
 // ==========================================================================
 // == 调试信息输出 ==

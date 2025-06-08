@@ -31,7 +31,7 @@
                 <div id="scan-status" class="scan-status-text"></div>
 
                 <label for="wifiPassword" data-translate="wifi_password">WiFi密码:</label>
-                <input type="text" id="wifiPassword" name="wifiPassword"> <!-- 改为text以方便查看，实际应用可改回password -->
+                <input type="password" id="wifiPassword" name="wifiPassword">
 
                 <button type="button" id="connectWifiButton" data-translate="connect_wifi">连接WiFi</button>
                 <div id="connect-wifi-status" class="status-text"></div>
@@ -65,27 +65,21 @@
                         <input type="number" step="0.1" id="humMax" name="humMax" required>
                     </div>
                 </div>
+                
+                <small data-translate="gas_threshold_note">注意：以下气体阈值为报警最大值 (PPM)</small>
 
                 <label data-translate="gas_co_threshold">CO (PPM):</label>
-                <div class="threshold-group">
-                     <div><label for="coMin" data-translate="min_val">最小值:</label><input type="number" step="0.1" id="coMin" name="coMin" required></div>
-                    <div><label for="coMax" data-translate="max_val">最大值:</label><input type="number" step="0.1" id="coMax" name="coMax" required></div>
-                </div>
+                <input type="number" step="1" id="coPpmMax" name="coPpmMax" required>
+                
                 <label data-translate="gas_no2_threshold">NO2 (PPM):</label>
-                <div class="threshold-group">
-                     <div><label for="no2Min" data-translate="min_val">最小值:</label><input type="number" step="0.01" id="no2Min" name="no2Min" required></div>
-                    <div><label for="no2Max" data-translate="max_val">最大值:</label><input type="number" step="0.01" id="no2Max" name="no2Max" required></div>
-                </div>
+                <input type="number" step="0.1" id="no2PpmMax" name="no2PpmMax" required>
+
                 <label data-translate="gas_c2h5oh_threshold">C2H5OH (PPM):</label>
-                <div class="threshold-group">
-                     <div><label for="c2h5ohMin" data-translate="min_val">最小值:</label><input type="number" step="0.1" id="c2h5ohMin" name="c2h5ohMin" required></div>
-                    <div><label for="c2h5ohMax" data-translate="max_val">最大值:</label><input type="number" step="0.1" id="c2h5ohMax" name="c2h5ohMax" required></div>
-                </div>
+                <input type="number" step="10" id="c2h5ohPpmMax" name="c2h5ohPpmMax" required>
+
                 <label data-translate="gas_voc_threshold">VOC (PPM):</label>
-                <div class="threshold-group">
-                     <div><label for="vocMin" data-translate="min_val">最小值:</label><input type="number" step="0.1" id="vocMin" name="vocMin" required></div>
-                    <div><label for="vocMax" data-translate="max_val">最大值:</label><input type="number" step="0.1" id="vocMax" name="vocMax" required></div>
-                </div>
+                <input type="number" step="0.5" id="vocPpmMax" name="vocPpmMax" required>
+
 
                  <div class="button-group">
                     <button type="button" id="saveThresholdsButton" data-translate="save_settings">保存阈值</button>
