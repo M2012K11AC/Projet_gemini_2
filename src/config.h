@@ -4,7 +4,7 @@
 // ==========================================================================
 // == WiFi 配置 ==
 // ==========================================================================
-#define WIFI_AP_SSID "ESP32_Sensor_Hub_V3" // AP模式下的SSID
+#define WIFI_AP_SSID "ESP32_Sensor_Hub" // AP模式下的SSID
 #define WIFI_AP_PASSWORD ""               // AP模式下的密码 (空表示开放)
 #define WIFI_AP_CHANNEL 1                 // AP模式下的WiFi信道
 #define WIFI_AP_MAX_CONNECTIONS 4         // AP模式下的最大连接数
@@ -40,7 +40,7 @@
 // ==========================================================================
 #define NEOPIXEL_PIN 48 // NeoPixel RGB LED 引脚
 #define NEOPIXEL_NUM 1  // NeoPixel LED 数量
-#define DEFAULT_LED_BRIGHTNESS 50 // 默认LED亮度 (0-100)
+#define DEFAULT_LED_BRIGHTNESS 20 // 默认LED亮度 (0-100)
 
 // ==========================================================================
 // == 气体传感器预热时间 ==
