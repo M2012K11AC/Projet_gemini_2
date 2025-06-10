@@ -442,13 +442,17 @@ void handleResetSettingsRequest(uint8_t clientNum, const JsonDocument& request, 
 void sendSensorDataToClients(const DeviceState& state, uint8_t specificClientNum) {
     DynamicJsonDocument doc(1024); 
     doc["type"] = "sensorData";
+
+    // [修复] 恢复为标准的JSON赋值方法，不再使用不存在的 .set()
     if (isnan(state.temperature)) doc["temperature"] = nullptr; else doc["temperature"] = state.temperature;
     if (isnan(state.humidity)) doc["humidity"] = nullptr; else doc["humidity"] = state.humidity;
+    
     JsonObject gas = doc.createNestedObject("gasPpm");
     if (isnan(state.gasPpmValues.co)) gas["co"] = nullptr; else gas["co"] = state.gasPpmValues.co;
     if (isnan(state.gasPpmValues.no2)) gas["no2"] = nullptr; else gas["no2"] = state.gasPpmValues.no2;
     if (isnan(state.gasPpmValues.c2h5oh)) gas["c2h5oh"] = nullptr; else gas["c2h5oh"] = state.gasPpmValues.c2h5oh;
     if (isnan(state.gasPpmValues.voc)) gas["voc"] = nullptr; else gas["voc"] = state.gasPpmValues.voc;
+
     doc["tempStatus"] = getSensorStatusString(state.tempStatus);
     doc["humStatus"]  = getSensorStatusString(state.humStatus);
     doc["gasCoStatus"] = getSensorStatusString(state.gasCoStatus);
@@ -471,7 +475,7 @@ void sendSensorDataToClients(const DeviceState& state, uint8_t specificClientNum
     else webSocket.broadcastTXT(jsonString);
 }
 
-void sendWifiStatusToClients(const WifiState& wifiStatus, uint8_t specificClientNum) {
+void sendWifiStatusToClients(const WifiState& currentWifiState, uint8_t specificClientNum) {
     DynamicJsonDocument doc(512);
     doc["type"] = "wifiStatus";
     if (WiFi.isConnected()) {
@@ -482,8 +486,8 @@ void sendWifiStatusToClients(const WifiState& wifiStatus, uint8_t specificClient
              doc["ip"] = WiFi.softAPIP().toString(); doc["ap_mode"] = true; doc["ap_ssid"] = WIFI_AP_SSID;
         } else { doc["ip"] = "N/A"; }
     }
-    doc["connecting_attempt_ssid"] = (wifiStatus.connectProgress == WIFI_CP_CONNECTING || wifiStatus.connectProgress == WIFI_CP_DISCONNECTING) ? wifiStatus.ssidToTry : "";
-    doc["connection_failed"] = (wifiStatus.connectProgress == WIFI_CP_FAILED);
+    doc["connecting_attempt_ssid"] = (currentWifiState.connectProgress == WIFI_CP_CONNECTING || currentWifiState.connectProgress == WIFI_CP_DISCONNECTING) ? currentWifiState.ssidToTry : "";
+    doc["connection_failed"] = (currentWifiState.connectProgress == WIFI_CP_FAILED);
     doc["ntp_synced"] = ntpSynced;
     String jsonString;
     serializeJson(doc, jsonString);
@@ -502,8 +506,10 @@ void sendHistoricalDataToClient(uint8_t clientNum, const CircularBuffer& histBuf
         JsonObject dataPoint = historyArr.createNestedObject();
         dataPoint["time"] = dp.timeStr;
         dataPoint["rel"] = dp.isTimeRelative; 
-        dataPoint["temp"] = dp.temp; 
-        dataPoint["hum"] = dp.hum; 
+        
+        // [修复] 恢复为标准的JSON赋值方法
+        dataPoint["temp"] = dp.temp;
+        dataPoint["hum"] = dp.hum;
         dataPoint["co"] = dp.gas.co;
         dataPoint["no2"] = dp.gas.no2;
         dataPoint["c2h5oh"] = dp.gas.c2h5oh;

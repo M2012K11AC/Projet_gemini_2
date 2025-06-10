@@ -1,8 +1,8 @@
 #include "data_manager.h"
 #include "config.h"
 #include <SPIFFS.h>
-#include <WiFi.h> // <-- 新增: 为访问 WiFi.SSID() 等函数
-#include <time.h> // <-- 新增: 为 generateTimeStr 中的时间函数
+#include <WiFi.h> 
+#include <time.h> 
 
 // ==========================================================================
 // == 全局变量定义 ==
@@ -22,7 +22,8 @@ unsigned long gasSensorWarmupEndTime = 0;
 // ==========================================================================
 
 DeviceState::DeviceState() : 
-    temperature(NAN), humidity(NAN),
+    // [修复] 初始化整型温湿度
+    temperature(0), humidity(0),
     tempStatus(SS_INIT), humStatus(SS_INIT),
     gasCoStatus(SS_INIT), gasNo2Status(SS_INIT),
     gasC2h5ohStatus(SS_INIT), gasVocStatus(SS_INIT),
@@ -76,6 +77,7 @@ void loadConfig(DeviceConfig& config) {
                 resetAllSettingsToDefault(config);
             } else {
                 JsonObject thresholdsObj = doc["thresholds"];
+                // [修复] 按整型加载温湿度阈值
                 config.thresholds.tempMin = thresholdsObj["tempMin"] | DEFAULT_TEMP_MIN;
                 config.thresholds.tempMax = thresholdsObj["tempMax"] | DEFAULT_TEMP_MAX;
                 config.thresholds.humMin  = thresholdsObj["humMin"]  | DEFAULT_HUM_MIN;
@@ -100,7 +102,7 @@ void loadConfig(DeviceConfig& config) {
         resetAllSettingsToDefault(config);
         saveConfig(config);
     }
-    P_PRINTF("  加载阈值 - 温度: %.1f-%.1f, 湿度: %.1f-%.1f\n",
+    P_PRINTF("  加载阈值 - 温度: %d-%d, 湿度: %d-%d\n",
                    config.thresholds.tempMin, config.thresholds.tempMax, config.thresholds.humMin, config.thresholds.humMax);
     P_PRINTF("  气体(PPM) - CO: %.2f, NO2: %.2f, C2H5OH: %.2f, VOC: %.2f\n",
                    config.thresholds.coPpmMax, config.thresholds.no2PpmMax,
@@ -115,6 +117,7 @@ void saveConfig(const DeviceConfig& config) {
     if (file) {
         DynamicJsonDocument doc(2048); 
         JsonObject thresholdsObj = doc.createNestedObject("thresholds");
+        // [修复] 保存整型温湿度阈值
         thresholdsObj["tempMin"] = config.thresholds.tempMin;
         thresholdsObj["tempMax"] = config.thresholds.tempMax;
         thresholdsObj["humMin"]  = config.thresholds.humMin;
@@ -185,8 +188,9 @@ void loadHistoricalDataFromFile(CircularBuffer& histBuffer) {
                     SensorDataPoint dp;
                     dp.timestamp = obj["ts"]; 
                     dp.isTimeRelative = obj["rel"] | false;
-                    dp.temp = obj["t"];
-                    dp.hum = obj["h"];
+                    // [修复] 按整型加载历史温湿度
+                    dp.temp = obj["t"].as<int>();
+                    dp.hum = obj["h"].as<int>();
                     dp.gas.co = obj["co"];
                     dp.gas.no2 = obj["no2"];
                     dp.gas.c2h5oh = obj["c2h5oh"]; 
@@ -213,6 +217,7 @@ void saveHistoricalDataToFile(const CircularBuffer& histBuffer) {
             JsonObject obj = arr.createNestedObject();
             obj["ts"] = dp.timestamp;
             obj["rel"] = dp.isTimeRelative;
+            // [修复] 保存整型温湿度
             obj["t"] = dp.temp;
             obj["h"] = dp.hum;
             obj["co"] = dp.gas.co;
@@ -272,9 +277,9 @@ void CircularBuffer::clear() {
 
 // -- 数据处理函数 --
 void addHistoricalDataPoint(CircularBuffer& histBuffer, const DeviceState& state) {
-    if (isnan(state.temperature) && isnan(state.humidity) && isnan(state.gasPpmValues.co)) return;
+    // [修复] 检查温湿度是否为初始值0，而不是isnan
+    if (state.temperature == 0 && state.humidity == 0 && isnan(state.gasPpmValues.co)) return;
     SensorDataPoint dp;
-    // `ntpSynced` is declared in web_handler.h/cpp, so we need to use extern
     extern bool ntpSynced;
     dp.isTimeRelative = !ntpSynced;
     if (dp.isTimeRelative) {

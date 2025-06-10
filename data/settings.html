@@ -46,11 +46,12 @@
                 <div class="threshold-group">
                     <div>
                         <label for="tempMin" data-translate="min_val">最小值:</label>
-                        <input type="number" step="0.1" id="tempMin" name="tempMin" required>
+                        <!-- [修复] 移除 step 属性以适应整数输入 -->
+                        <input type="number" id="tempMin" name="tempMin" required>
                     </div>
                     <div>
                         <label for="tempMax" data-translate="max_val">最大值:</label>
-                        <input type="number" step="0.1" id="tempMax" name="tempMax" required>
+                        <input type="number" id="tempMax" name="tempMax" required>
                     </div>
                 </div>
 
@@ -58,11 +59,11 @@
                 <div class="threshold-group">
                     <div>
                         <label for="humMin" data-translate="min_val">最小值:</label>
-                        <input type="number" step="0.1" id="humMin" name="humMin" required>
+                        <input type="number" id="humMin" name="humMin" required>
                     </div>
                     <div>
                         <label for="humMax" data-translate="max_val">最大值:</label>
-                        <input type="number" step="0.1" id="humMax" name="humMax" required>
+                        <input type="number" id="humMax" name="humMax" required>
                     </div>
                 </div>
                 

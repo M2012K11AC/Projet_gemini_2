@@ -23,8 +23,9 @@ struct GasData {
 
 // 设备当前状态
 struct DeviceState {
-    float temperature;
-    float humidity;
+    // [修复] 将温度和湿度改为整型
+    int temperature;
+    int humidity;
     GasData gasPpmValues;
     SensorStatusVal tempStatus, humStatus, gasCoStatus, gasNo2Status, gasC2h5ohStatus, gasVocStatus;
     bool buzzerShouldBeActive;
@@ -38,8 +39,9 @@ struct DeviceState {
 
 // 报警阈值配置
 struct AlarmThresholds {
-    float tempMin, tempMax;
-    float humMin, humMax;
+    // [修复] 将温度和湿度阈值改为整型
+    int tempMin, tempMax;
+    int humMin, humMax;
     float coPpmMax, no2PpmMax, c2h5ohPpmMax, vocPpmMax;
 };
 
@@ -72,7 +74,8 @@ struct WifiState {
 struct SensorDataPoint {
     unsigned long timestamp;
     bool isTimeRelative;
-    float temp, hum;
+    // [修复] 将温度和湿度改为整型
+    int temp, hum;
     GasData gas;
     char timeStr[12]; // 用于存储格式化后的时间字符串
 };

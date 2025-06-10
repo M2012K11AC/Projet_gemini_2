@@ -46,7 +46,8 @@ void handleWebSocketMessage(uint8_t clientNum, const JsonDocument& doc, JsonDocu
 
 // -- WebSocket 数据发送 --
 void sendSensorDataToClients(const DeviceState& state, uint8_t specificClientNum = 255);
-void sendWifiStatusToClients(const WifiState& wifiStatus, uint8_t specificClientNum = 255);
+// [修复] 将参数 wifiStatus 重命名为 currentWifiState 来解决IntelliSense的解析问题
+void sendWifiStatusToClients(const WifiState& currentWifiState, uint8_t specificClientNum = 255);
 void sendHistoricalDataToClient(uint8_t clientNum, const CircularBuffer& histBuffer);
 void sendCurrentSettingsToClient(uint8_t clientNum, const DeviceConfig& config);
 

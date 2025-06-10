@@ -201,9 +201,9 @@ const App = {
 
     // 4. 数据处理和UI更新
     handleSensorData(data) {
-        // 更新传感器卡片，湿度保留一位小数
-        this.updateElementText('tempVal', data.temperature?.toFixed(1) || '--');
-        this.updateElementText('humVal', data.humidity?.toFixed(1) || '--');
+        // [修复] 不再使用 toFixed，直接显示从后端接收到的值
+        this.updateElementText('tempVal', data.temperature !== null ? data.temperature : '--');
+        this.updateElementText('humVal', data.humidity !== null ? data.humidity : '--');
         this.updateElementText('coVal', data.gasPpm?.co?.toFixed(2) || '--');
         this.updateElementText('no2Val', data.gasPpm?.no2?.toFixed(2) || '--');
         this.updateElementText('c2h5ohVal', data.gasPpm?.c2h5oh?.toFixed(1) || '--');
@@ -525,10 +525,11 @@ const App = {
     handleSaveThresholds() {
         const thresholds = {
             action: 'saveThresholds',
-            tempMin: parseFloat(document.getElementById('tempMin')?.value),
-            tempMax: parseFloat(document.getElementById('tempMax')?.value),
-            humMin: parseFloat(document.getElementById('humMin')?.value),
-            humMax: parseFloat(document.getElementById('humMax')?.value),
+            // [修复] 使用 parseInt 解析整型阈值
+            tempMin: parseInt(document.getElementById('tempMin')?.value, 10),
+            tempMax: parseInt(document.getElementById('tempMax')?.value, 10),
+            humMin: parseInt(document.getElementById('humMin')?.value, 10),
+            humMax: parseInt(document.getElementById('humMax')?.value, 10),
             coPpmMax: parseFloat(document.getElementById('coPpmMax')?.value),
             no2PpmMax: parseFloat(document.getElementById('no2PpmMax')?.value),
             c2h5ohPpmMax: parseFloat(document.getElementById('c2h5ohPpmMax')?.value),

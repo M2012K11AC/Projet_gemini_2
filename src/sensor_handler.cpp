@@ -81,8 +81,9 @@ void readSensors(DeviceState& state) {
         state.tempStatus = SS_DISCONNECTED;
         state.humStatus = SS_DISCONNECTED;
     } else {
-        state.temperature = newTemp;
-        state.humidity = newHum;
+        // [修复] 将浮点数读数四舍五入为整数
+        state.temperature = round(newTemp);
+        state.humidity = round(newHum);
         if(state.tempStatus == SS_INIT || state.tempStatus == SS_DISCONNECTED) state.tempStatus = SS_NORMAL;
         if(state.humStatus == SS_INIT || state.humStatus == SS_DISCONNECTED) state.humStatus = SS_NORMAL;
     }
@@ -123,7 +124,7 @@ void checkAlarms(DeviceState& state, const DeviceConfig& config) {
     // 温度报警
     if (state.tempStatus != SS_DISCONNECTED && state.tempStatus != SS_INIT) {
         if (state.temperature < config.thresholds.tempMin || state.temperature > config.thresholds.tempMax) {
-            if (state.tempStatus == SS_NORMAL) P_PRINTF("[ALARM] 温度超限! %.1f°C (范围: %.1f-%.1f)\n", state.temperature, config.thresholds.tempMin, config.thresholds.tempMax);
+            if (state.tempStatus == SS_NORMAL) P_PRINTF("[ALARM] 温度超限! %d°C (范围: %d-%d)\n", state.temperature, config.thresholds.tempMin, config.thresholds.tempMax);
             state.tempStatus = SS_WARNING; anyAlarm = true;
         } else if (state.tempStatus == SS_WARNING) {
             state.tempStatus = SS_NORMAL;
@@ -132,7 +133,7 @@ void checkAlarms(DeviceState& state, const DeviceConfig& config) {
     // 湿度报警
     if (state.humStatus != SS_DISCONNECTED && state.humStatus != SS_INIT) {
         if (state.humidity < config.thresholds.humMin || state.humidity > config.thresholds.humMax) {
-            if (state.humStatus == SS_NORMAL) P_PRINTF("[ALARM] 湿度超限! %.1f%% (范围: %.1f-%.1f)\n", state.humidity, config.thresholds.humMin, config.thresholds.humMax);
+            if (state.humStatus == SS_NORMAL) P_PRINTF("[ALARM] 湿度超限! %d%% (范围: %d-%d)\n", state.humidity, config.thresholds.humMin, config.thresholds.humMax);
             state.humStatus = SS_WARNING; anyAlarm = true;
         } else if (state.humStatus == SS_WARNING) { 
             state.humStatus = SS_NORMAL; 

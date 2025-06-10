@@ -50,12 +50,12 @@
 // ==========================================================================
 // == 默认报警阈值 (气体单位已改为PPM) ==
 // ==========================================================================
-// 温度 (°C)
-#define DEFAULT_TEMP_MIN 10.0f
-#define DEFAULT_TEMP_MAX 30.0f
-// 湿度 (%)
-#define DEFAULT_HUM_MIN 30.0f
-#define DEFAULT_HUM_MAX 70.0f
+// [修复] 温度 (°C) - 改为整数
+#define DEFAULT_TEMP_MIN 10
+#define DEFAULT_TEMP_MAX 30
+// [修复] 湿度 (%) - 改为整数
+#define DEFAULT_HUM_MIN 30
+#define DEFAULT_HUM_MAX 70
 // 气体浓度 (PPM) - 注意: 这些是最大值阈值
 #define DEFAULT_CO_PPM_MAX 50.0f       // 一氧化碳 (CO) - PPM
 #define DEFAULT_NO2_PPM_MAX 5.0f       // 二氧化氮 (NO2) - PPM
