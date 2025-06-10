@@ -153,18 +153,18 @@ const App = {
             'historicalData': (d) => this.populateChartsWithHistoricalData(d.history),
             'settingsData': (d) => this.populateSettingsForm(d.settings),
             'wifiScanResults': (d) => this.displayWifiScanResults(d),
-            'connectWifiStatus': (d) => this.updateStatusMessage('connect-wifi-status', d.message, !d.success),
-            'saveSettingsStatus': (d) => this.updateStatusMessage('save-settings-status', d.message, !d.success),
-            'saveBrightnessStatus': (d) => this.updateStatusMessage('save-led-status', d.message, !d.success),
+            'connectWifiStatus': (d) => this.updateStatusMessage('connect-wifi-status', d.message, d.success ? 'success' : 'failed'),
+            'saveSettingsStatus': (d) => this.updateStatusMessage('save-settings-status', d.message, d.success ? 'success' : 'failed'),
+            'saveBrightnessStatus': (d) => this.updateStatusMessage('save-led-status', d.message, d.success ? 'success' : 'failed'),
             'resetStatus': (d) => {
-                this.updateStatusMessage('reset-status', d.message, !d.success);
+                this.updateStatusMessage('reset-status', d.message, d.success ? 'success' : 'failed');
                 if(d.success) alert(this.translations[this.currentLang]?.settings_reset_success || "Settings reset. Device will restart.");
             },
             'error': (d) => {
                 console.error('Error message from server:', d.message);
-                this.updateStatusMessage('general-status', d.message, true);
+                this.updateStatusMessage('general-status', d.message, 'failed');
             },
-            'scanStatus': (d) => this.updateStatusMessage('scan-status', d.message, false),
+            'scanStatus': (d) => this.updateStatusMessage('scan-status', d.message, 'neutral'),
         }[data.type];
 
         if (handler) {
@@ -201,7 +201,7 @@ const App = {
 
     // 4. 数据处理和UI更新
     handleSensorData(data) {
-        // 更新传感器卡片
+        // 更新传感器卡片，湿度保留一位小数
         this.updateElementText('tempVal', data.temperature?.toFixed(1) || '--');
         this.updateElementText('humVal', data.humidity?.toFixed(1) || '--');
         this.updateElementText('coVal', data.gasPpm?.co?.toFixed(2) || '--');
@@ -227,18 +227,29 @@ const App = {
     handleWifiStatus(data) {
         const statusTextEl = document.getElementById('wifiStatusText');
         const ntpStatusEl = document.getElementById('ntpStatusText');
-
+    
         if (statusTextEl) {
-            let key = 'wifi_disconnected';
-            if (data.connected) key = 'wifi_connected_to';
-            else if (data.connecting_attempt_ssid) key = 'wifi_connecting_to';
-            else if (data.connection_failed) key = 'wifi_connection_failed';
+            let translationKey = 'wifi_disconnected';
+            let statusClass = 'status-neutral'; // Default state: neutral color
+    
+            if (data.connected) {
+                translationKey = 'wifi_connected_to';
+                statusClass = 'status-connected'; // Green
+            } else if (data.connecting_attempt_ssid) {
+                translationKey = 'wifi_connecting_to';
+                statusClass = 'status-connecting'; // Blue
+            } else if (data.connection_failed) {
+                translationKey = 'wifi_connection_failed';
+                statusClass = 'status-failed'; // Red
+            }
             
-            let text = this.translations[this.currentLang]?.[key] || key;
+            let text = this.translations[this.currentLang]?.[translationKey] || translationKey;
             if (data.connected) text = text.replace('{ssid}', data.ssid);
             if (data.connecting_attempt_ssid) text = text.replace('{ssid}', data.connecting_attempt_ssid);
             
             statusTextEl.textContent = text;
+            statusTextEl.className = `status-text-dynamic ${statusClass}`;
+    
             if (!data.connected && data.ap_mode) {
                 statusTextEl.textContent += ` (AP: ${data.ap_ssid || 'ESP32_Sensor_Hub_V2'})`;
             }
@@ -304,8 +315,22 @@ const App = {
             data: {
                 labels: this.charts.tempHum.labels,
                 datasets: [
-                    { label: 'Temp', data: this.charts.tempHum.datasets.temp, borderColor: 'rgba(255, 99, 132, 1)', yAxisID: 'yTemp', tension: 0.3, pointRadius: 0 },
-                    { label: 'Hum', data: this.charts.tempHum.datasets.hum, borderColor: 'rgba(54, 162, 235, 1)', yAxisID: 'yHum', tension: 0.3, pointRadius: 0 }
+                    { 
+                        label: this.translations[this.currentLang]?.chart_temperature_label || 'Temperature (°C)', 
+                        data: this.charts.tempHum.datasets.temp, 
+                        borderColor: 'rgba(255, 99, 132, 1)', 
+                        yAxisID: 'yTemp', 
+                        tension: 0.3, 
+                        pointRadius: 0 
+                    },
+                    { 
+                        label: this.translations[this.currentLang]?.chart_humidity_label || 'Humidity (%)', 
+                        data: this.charts.tempHum.datasets.hum, 
+                        borderColor: 'rgba(54, 162, 235, 1)', 
+                        yAxisID: 'yHum', 
+                        tension: 0.3, 
+                        pointRadius: 0 
+                    }
                 ]
             },
             options: this.getCommonChartOptions({
@@ -318,16 +343,17 @@ const App = {
     initGasChart() {
         const ctx = document.getElementById('gasChart')?.getContext('2d');
         if (!ctx) return;
+        const lang = this.currentLang;
 
         this.charts.gas.instance = new Chart(ctx, {
             type: 'line',
             data: {
                 labels: this.charts.gas.labels,
                 datasets: [
-                    { label: 'CO', data: this.charts.gas.datasets.co, borderColor: 'rgba(255, 159, 64, 1)', tension: 0.3, pointRadius: 0 },
-                    { label: 'NO2', data: this.charts.gas.datasets.no2, borderColor: 'rgba(153, 102, 255, 1)', tension: 0.3, pointRadius: 0 },
-                    { label: 'C2H5OH', data: this.charts.gas.datasets.c2h5oh, borderColor: 'rgba(75, 192, 192, 1)', tension: 0.3, pointRadius: 0 },
-                    { label: 'VOC', data: this.charts.gas.datasets.voc, borderColor: 'rgba(255, 205, 86, 1)', tension: 0.3, pointRadius: 0 }
+                    { label: this.translations[lang]?.gas_co_label || 'CO', data: this.charts.gas.datasets.co, borderColor: 'rgba(255, 159, 64, 1)', tension: 0.3, pointRadius: 0 },
+                    { label: this.translations[lang]?.gas_no2_label || 'NO2', data: this.charts.gas.datasets.no2, borderColor: 'rgba(153, 102, 255, 1)', tension: 0.3, pointRadius: 0 },
+                    { label: this.translations[lang]?.gas_c2h5oh_label || 'C2H5OH', data: this.charts.gas.datasets.c2h5oh, borderColor: 'rgba(75, 192, 192, 1)', tension: 0.3, pointRadius: 0 },
+                    { label: this.translations[lang]?.gas_voc_label || 'VOC', data: this.charts.gas.datasets.voc, borderColor: 'rgba(255, 205, 86, 1)', tension: 0.3, pointRadius: 0 }
                 ]
             },
             options: this.getCommonChartOptions({
@@ -450,18 +476,16 @@ const App = {
 
     handleScanWifi() {
         this.sendMessage({ action: 'scanWifi' });
-        this.updateStatusMessage('scan-status', this.translations[this.currentLang]?.wifi_scanning || 'Scanning WiFi...', false);
+        this.updateStatusMessage('scan-status', this.translations[this.currentLang]?.wifi_scanning || 'Scanning WiFi...', 'connecting');
     },
 
     displayWifiScanResults(data) {
         const container = document.getElementById('ssid-list-container');
-        const scanStatusEl = document.getElementById('scan-status');
-        if (!container || !scanStatusEl) return;
+        if (!container) return;
         
         container.innerHTML = ''; 
         if (data.error) {
-            scanStatusEl.textContent = data.error;
-            scanStatusEl.style.color = 'var(--danger-color)';
+            this.updateStatusMessage('scan-status', data.error, 'failed');
             container.style.display = 'none';
             return;
         }
@@ -478,11 +502,11 @@ const App = {
                 };
                 container.appendChild(button);
             });
-            scanStatusEl.textContent = `${networks.length} ${this.translations[this.currentLang]?.networks_found_status || 'networks found.'}`;
-            scanStatusEl.style.color = 'var(--text-light-color)';
+            const foundMsg = `${networks.length} ${this.translations[this.currentLang]?.networks_found_status || 'networks found.'}`;
+            this.updateStatusMessage('scan-status', foundMsg, 'success');
             container.style.display = 'block';
         } else {
-            scanStatusEl.textContent = this.translations[this.currentLang]?.no_networks_found_status || 'No networks found.';
+            this.updateStatusMessage('scan-status', this.translations[this.currentLang]?.no_networks_found_status || 'No networks found.', 'neutral');
             container.style.display = 'none';
         }
     },
@@ -491,11 +515,11 @@ const App = {
         const ssid = document.getElementById('wifiSSID')?.value.trim();
         const password = document.getElementById('wifiPassword')?.value; 
         if (!ssid) {
-            this.updateStatusMessage('connect-wifi-status', this.translations[this.currentLang]?.wifi_ssid_empty || 'SSID cannot be empty.', true);
+            this.updateStatusMessage('connect-wifi-status', this.translations[this.currentLang]?.wifi_ssid_empty || 'SSID cannot be empty.', 'failed');
             return;
         }
         this.sendMessage({ action: 'connectWifi', ssid, password });
-        this.updateStatusMessage('connect-wifi-status', this.translations[this.currentLang]?.connecting_wifi || 'Connecting...', false);
+        this.updateStatusMessage('connect-wifi-status', this.translations[this.currentLang]?.connecting_wifi || 'Connecting...', 'connecting');
     },
 
     handleSaveThresholds() {
@@ -513,28 +537,28 @@ const App = {
 
         for (const key in thresholds) {
             if (key !== 'action' && isNaN(thresholds[key])) {
-                this.updateStatusMessage('save-settings-status', this.translations[this.currentLang]?.settings_invalid_threshold || 'All thresholds must be numbers.', true); return;
+                this.updateStatusMessage('save-settings-status', this.translations[this.currentLang]?.settings_invalid_threshold || 'All thresholds must be numbers.', 'failed'); return;
             }
         }
         this.sendMessage(thresholds);
-        this.updateStatusMessage('save-settings-status', this.translations[this.currentLang]?.settings_saving || 'Saving settings...', false);
+        this.updateStatusMessage('save-settings-status', this.translations[this.currentLang]?.settings_saving || 'Saving settings...', 'neutral');
     },
 
     handleSaveLedBrightness() {
         const brightness = parseInt(document.getElementById('ledBrightness')?.value, 10);
         if (isNaN(brightness) || brightness < 0 || brightness > 100) {
-            this.updateStatusMessage('save-led-status', this.translations[this.currentLang]?.led_brightness_invalid || 'Brightness must be between 0 and 100.', true);
+            this.updateStatusMessage('save-led-status', this.translations[this.currentLang]?.led_brightness_invalid || 'Brightness must be between 0 and 100.', 'failed');
             return;
         }
         this.sendMessage({ action: 'saveLedBrightness', brightness });
-        this.updateStatusMessage('save-led-status', this.translations[this.currentLang]?.led_brightness_saving || 'Saving brightness...', false);
+        this.updateStatusMessage('save-led-status', this.translations[this.currentLang]?.led_brightness_saving || 'Saving brightness...', 'neutral');
     },
 
     handleResetSettings() {
         const confirmationText = this.translations[this.currentLang]?.reset_settings_prompt || "Are you sure? This cannot be undone.";
         if (confirm(confirmationText)) {
             this.sendMessage({ action: 'resetSettings' });
-            this.updateStatusMessage('reset-status', this.translations[this.currentLang]?.settings_resetting || 'Resetting...', false);
+            this.updateStatusMessage('reset-status', this.translations[this.currentLang]?.settings_resetting || 'Resetting...', 'neutral');
         }
     },
 
@@ -556,12 +580,27 @@ const App = {
         if (el && value !== undefined) el.value = value;
     },
 
-    updateStatusMessage(elementId, message, isError) {
+    updateStatusMessage(elementId, message, status = 'neutral') {
         const el = document.getElementById(elementId);
         if (el) {
             el.textContent = message;
-            el.style.color = isError ? 'var(--danger-color)' : 'var(--text-light-color)'; 
-            setTimeout(() => { if (el.textContent === message) el.textContent = ''; }, 5000); 
+            
+            // 重置类并应用新的状态类
+            el.classList.remove('status-connecting', 'status-success', 'status-failed');
+
+            if (status !== 'neutral') {
+                el.classList.add(`status-${status}`);
+            }
+
+            // 在延时后清除消息，但“连接中”状态除外
+            if (status !== 'connecting') {
+                 setTimeout(() => {
+                    if (el.textContent === message) {
+                       el.textContent = '';
+                       el.classList.remove('status-connecting', 'status-success', 'status-failed'); // 清除时也移除类
+                    }
+                }, 5000); 
+            }
         }
     }
 };

@@ -4,22 +4,22 @@
     --primary-hover-color: #0056b3;
     --secondary-color: #6c757d; /* 次要/扫描按钮灰 */
     --secondary-hover-color: #5a6268;
-    --success-color: #28a745; /* 绿色，用于正常状态 */
+    --success-color: #28a745; /* 绿色，用于成功状态 */
     --warning-color: #ffc107; /* 黄色，用于警告/传感器断开 */
-    --danger-color: #dc3545;  /* 红色，用于超限报警 */
-    --info-color: #17a2b8;    /* 信息蓝，用于返回按钮 */
+    --danger-color: #dc3545;  /* 红色，用于失败/超限报警 */
+    --info-color: #17a2b8;    /* 信息蓝，用于连接中/返回按钮 */
     --info-hover-color: #138496;
     --initializing-color: #fd7e14; /* 橙色，用于预热状态 */
 
-
     --text-color: #333;
     --text-light-color: #555;
+    --neutral-color: var(--text-light-color); /* 中性色，用于未连接状态 */
     --text-extra-light-color: #777;
     --bg-color: #f4f7f6; /* 更柔和的背景色 */
     --card-bg-color: rgba(255, 255, 255, 0.9); /* 卡片背景，带轻微透明 */
     --card-border-color: rgba(0, 0, 0, 0.08);
-    --navbar-bg-color: rgba(0, 123, 255, 0.95); /* 导航栏背景 */
-    --navbar-text-color: white;
+    --navbar-bg-color: rgba(255, 255, 255, 0.65); /* 新的毛玻璃效果背景 */
+    --navbar-text-color: var(--text-color); /* 新的导航栏文字颜色 */
 
     --border-radius: 10px; /* 稍大的圆角 */
     --box-shadow: 0 5px 15px rgba(0, 0, 0, 0.08);
@@ -56,6 +56,7 @@ body {
     position: sticky;
     top: 0;
     z-index: 1000;
+    border-bottom: 1px solid rgba(0,0,0,0.1);
 }
 
 .navbar h1 {
@@ -77,7 +78,7 @@ body {
     margin-left: 10px;
     border-radius: 6px;
     background-color: transparent;
-    border: 1px solid rgba(255,255,255,0.6);
+    border: 1px solid rgba(0,0,0,0.2);
     cursor: pointer;
     transition: background-color 0.2s ease, border-color 0.2s ease;
     white-space: nowrap;
@@ -86,8 +87,8 @@ body {
 }
 .navbar .lang-button:hover,
 .navbar .lang-button.active {
-    background-color: rgba(255,255,255,0.3);
-    border-color: white;
+    background-color: rgba(0,0,0,0.08);
+    border-color: rgba(0,0,0,0.4);
 }
 
 .navbar .nav-icon {
@@ -100,7 +101,7 @@ body {
     transition: background-color 0.2s ease;
 }
 .navbar .nav-icon:hover {
-    background-color: rgba(255,255,255,0.25);
+    background-color: rgba(0,0,0,0.1);
 }
 
 h2, h3 {
@@ -231,6 +232,22 @@ canvas#sensorDataChart {
 .status-card p span:first-child {
     font-weight: 500;
     color: var(--text-color);
+}
+
+/* WiFi状态文本颜色样式 - 已修正 */
+#wifiStatusText.status-text-dynamic {
+    font-weight: 500;
+    transition: color 0.3s ease;
+}
+#wifiStatusText.status-text-dynamic.status-neutral { color: var(--neutral-color); }
+#wifiStatusText.status-text-dynamic.status-connected { color: var(--success-color); }
+#wifiStatusText.status-text-dynamic.status-connecting { color: var(--info-color); animation: pulse-text 1.5s infinite;}
+#wifiStatusText.status-text-dynamic.status-failed { color: var(--danger-color); }
+
+@keyframes pulse-text {
+  0% { opacity: 1; }
+  50% { opacity: 0.7; }
+  100% { opacity: 1; }
 }
 
 form {
@@ -372,14 +389,33 @@ small {
     flex-direction: column;
 }
 
-.scan-status-text, .status-text {
+/* Unified Status Text Styling */
+.status-text,
+.scan-status-text {
     margin-top: 12px;
     font-style: italic;
-    color: var(--text-light-color);
     font-size: 0.95em;
     min-height: 1.4em;
     text-align: center;
+    transition: color 0.3s ease, opacity 0.3s ease;
+    color: var(--neutral-color); /* Default neutral color */
 }
+
+.status-connecting {
+    color: var(--info-color);
+    animation: pulse-text 1.5s infinite;
+}
+
+.status-success {
+    color: var(--success-color);
+    font-weight: 500;
+}
+
+.status-failed {
+    color: var(--danger-color);
+    font-weight: 500;
+}
+
 
 .button-group {
     display: flex;
