@@ -13,33 +13,49 @@
 // 传感器状态枚举
 enum SensorStatusVal { SS_NORMAL, SS_WARNING, SS_DISCONNECTED, SS_INIT };
 
+// 新增：传感器校准状态机枚举
+enum CalibrationState { CAL_IDLE, CAL_IN_PROGRESS, CAL_COMPLETED, CAL_FAILED };
+
 // 多通道气体传感器数据结构 (存储转换后的PPM值)
-struct GasData {
+struct GasPpmData {
     float co;      // 一氧化碳 (CO) - PPM
     float no2;     // 二氧化氮 (NO2) - PPM
     float c2h5oh;  // 乙醇 (C2H5OH) - PPM
     float voc;     // 挥发性有机物 (VOC) - PPM
 };
 
+// 新增：气体传感器电阻数据结构 (kOhm)
+struct GasResistData {
+    float co;
+    float no2;
+    float c2h5oh;
+    float voc;
+};
+
+
 // 设备当前状态
 struct DeviceState {
-    // [修复] 将温度和湿度改为整型
     int temperature;
     int humidity;
-    GasData gasPpmValues;
+    GasPpmData gasPpmValues;
+    GasResistData gasRsValues; // 新增: 用于存储当前测量的Rs值
     SensorStatusVal tempStatus, humStatus, gasCoStatus, gasNo2Status, gasC2h5ohStatus, gasVocStatus;
     bool buzzerShouldBeActive;
     unsigned long buzzerStopTime;
     int buzzerBeepCount;
     bool ledBlinkState;
     unsigned long lastBlinkTime;
+    
+    // 新增: 校准相关状态
+    CalibrationState calibrationState;
+    int calibrationProgress;      // 校准进度 (0-100)
+    GasResistData measuredR0;     // 校准过程中测量的R0值
 
     DeviceState(); // 构造函数
 };
 
 // 报警阈值配置
 struct AlarmThresholds {
-    // [修复] 将温度和湿度阈值改为整型
     int tempMin, tempMax;
     int humMin, humMax;
     float coPpmMax, no2PpmMax, c2h5ohPpmMax, vocPpmMax;
@@ -48,6 +64,7 @@ struct AlarmThresholds {
 // 设备配置 (从SPIFFS加载/保存)
 struct DeviceConfig {
     AlarmThresholds thresholds;
+    GasResistData r0Values; // 新增: 用于存储校准后的R0值
     String currentSsidForSettings;
     String currentPasswordForSettings;
     uint8_t ledBrightness;
@@ -74,9 +91,8 @@ struct WifiState {
 struct SensorDataPoint {
     unsigned long timestamp;
     bool isTimeRelative;
-    // [修复] 将温度和湿度改为整型
     int temp, hum;
-    GasData gas;
+    GasPpmData gas; // 类型从 GasData 更改为 GasPpmData
     char timeStr[12]; // 用于存储格式化后的时间字符串
 };
 
@@ -107,6 +123,10 @@ extern CircularBuffer historicalData;
 
 extern unsigned long lastSensorReadTime, lastWebSocketUpdateTime, lastHistoricalDataSaveTime;
 extern unsigned long gasSensorWarmupEndTime;
+
+// 新增: FreeRTOS 任务句柄和信号量，用于控制校准流程
+extern TaskHandle_t calibrationTaskHandle;
+extern SemaphoreHandle_t calibrationSemaphore;
 
 
 // ==========================================================================

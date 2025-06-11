@@ -17,19 +17,29 @@ unsigned long lastWebSocketUpdateTime = 0;
 unsigned long lastHistoricalDataSaveTime = 0;
 unsigned long gasSensorWarmupEndTime = 0;
 
+// 新增: FreeRTOS 任务句柄和信号量
+TaskHandle_t calibrationTaskHandle = NULL;
+SemaphoreHandle_t calibrationSemaphore = NULL;
+
+
 // ==========================================================================
 // == 构造函数实现 ==
 // ==========================================================================
 
 DeviceState::DeviceState() : 
-    // [修复] 初始化整型温湿度
     temperature(0), humidity(0),
     tempStatus(SS_INIT), humStatus(SS_INIT),
     gasCoStatus(SS_INIT), gasNo2Status(SS_INIT),
     gasC2h5ohStatus(SS_INIT), gasVocStatus(SS_INIT),
     buzzerShouldBeActive(false), buzzerStopTime(0), buzzerBeepCount(0),
-    ledBlinkState(false), lastBlinkTime(0) {
+    ledBlinkState(false), lastBlinkTime(0),
+    // 新增: 初始化校准状态
+    calibrationState(CAL_IDLE),
+    calibrationProgress(0)
+{
     gasPpmValues = {NAN, NAN, NAN, NAN};
+    gasRsValues = {NAN, NAN, NAN, NAN};
+    measuredR0 = {NAN, NAN, NAN, NAN};
 }
 
 DeviceConfig::DeviceConfig() : ledBrightness(DEFAULT_LED_BRIGHTNESS) {
@@ -40,6 +50,13 @@ DeviceConfig::DeviceConfig() : ledBrightness(DEFAULT_LED_BRIGHTNESS) {
         DEFAULT_NO2_PPM_MAX,
         DEFAULT_C2H5OH_PPM_MAX,
         DEFAULT_VOC_PPM_MAX
+    };
+    // 新增: 初始化默认R0值
+    r0Values = {
+        DEFAULT_R0_CO,
+        DEFAULT_R0_NO2,
+        DEFAULT_R0_C2H5OH,
+        DEFAULT_R0_VOC
     };
 }
 
@@ -77,7 +94,6 @@ void loadConfig(DeviceConfig& config) {
                 resetAllSettingsToDefault(config);
             } else {
                 JsonObject thresholdsObj = doc["thresholds"];
-                // [修复] 按整型加载温湿度阈值
                 config.thresholds.tempMin = thresholdsObj["tempMin"] | DEFAULT_TEMP_MIN;
                 config.thresholds.tempMax = thresholdsObj["tempMax"] | DEFAULT_TEMP_MAX;
                 config.thresholds.humMin  = thresholdsObj["humMin"]  | DEFAULT_HUM_MIN;
@@ -86,6 +102,13 @@ void loadConfig(DeviceConfig& config) {
                 config.thresholds.no2PpmMax  = thresholdsObj["no2PpmMax"]  | DEFAULT_NO2_PPM_MAX;
                 config.thresholds.c2h5ohPpmMax = thresholdsObj["c2h5ohPpmMax"] | DEFAULT_C2H5OH_PPM_MAX;
                 config.thresholds.vocPpmMax  = thresholdsObj["vocPpmMax"]  | DEFAULT_VOC_PPM_MAX;
+
+                // 新增: 加载R0值
+                JsonObject r0Obj = doc["r0Values"];
+                config.r0Values.co = r0Obj["co"] | DEFAULT_R0_CO;
+                config.r0Values.no2 = r0Obj["no2"] | DEFAULT_R0_NO2;
+                config.r0Values.c2h5oh = r0Obj["c2h5oh"] | DEFAULT_R0_C2H5OH;
+                config.r0Values.voc = r0Obj["voc"] | DEFAULT_R0_VOC;
                 
                 config.currentSsidForSettings = doc["wifi"]["ssid"].as<String>();
                 config.currentPasswordForSettings = doc["wifi"]["password"].as<String>();
@@ -107,6 +130,9 @@ void loadConfig(DeviceConfig& config) {
     P_PRINTF("  气体(PPM) - CO: %.2f, NO2: %.2f, C2H5OH: %.2f, VOC: %.2f\n",
                    config.thresholds.coPpmMax, config.thresholds.no2PpmMax,
                    config.thresholds.c2h5ohPpmMax, config.thresholds.vocPpmMax);
+    P_PRINTF("  加载的R0值 - CO: %.2f, NO2: %.2f, C2H5OH: %.2f, VOC: %.2f\n",
+                   config.r0Values.co, config.r0Values.no2,
+                   config.r0Values.c2h5oh, config.r0Values.voc);
     P_PRINTF("  加载的WiFi SSID (自动连接): %s\n", config.currentSsidForSettings.c_str());
     P_PRINTF("  加载的LED亮度: %d\n", config.ledBrightness);
 }
@@ -117,7 +143,6 @@ void saveConfig(const DeviceConfig& config) {
     if (file) {
         DynamicJsonDocument doc(2048); 
         JsonObject thresholdsObj = doc.createNestedObject("thresholds");
-        // [修复] 保存整型温湿度阈值
         thresholdsObj["tempMin"] = config.thresholds.tempMin;
         thresholdsObj["tempMax"] = config.thresholds.tempMax;
         thresholdsObj["humMin"]  = config.thresholds.humMin;
@@ -126,6 +151,13 @@ void saveConfig(const DeviceConfig& config) {
         thresholdsObj["no2PpmMax"]  = config.thresholds.no2PpmMax;
         thresholdsObj["c2h5ohPpmMax"] = config.thresholds.c2h5ohPpmMax;
         thresholdsObj["vocPpmMax"]  = config.thresholds.vocPpmMax;
+
+        // 新增: 保存R0值
+        JsonObject r0Obj = doc.createNestedObject("r0Values");
+        r0Obj["co"] = config.r0Values.co;
+        r0Obj["no2"] = config.r0Values.no2;
+        r0Obj["c2h5oh"] = config.r0Values.c2h5oh;
+        r0Obj["voc"] = config.r0Values.voc;
 
         JsonObject wifiObj = doc.createNestedObject("wifi");
         if (WiFi.isConnected()) {
@@ -165,6 +197,13 @@ void resetAllSettingsToDefault(DeviceConfig& config) {
         DEFAULT_C2H5OH_PPM_MAX,
         DEFAULT_VOC_PPM_MAX
     };
+    // 新增: 重置R0值为默认值
+    config.r0Values = {
+        DEFAULT_R0_CO,
+        DEFAULT_R0_NO2,
+        DEFAULT_R0_C2H5OH,
+        DEFAULT_R0_VOC
+    };
     config.currentSsidForSettings = "";
     config.currentPasswordForSettings = "";
     config.ledBrightness = DEFAULT_LED_BRIGHTNESS;
@@ -176,6 +215,7 @@ void loadHistoricalDataFromFile(CircularBuffer& histBuffer) {
     if (SPIFFS.exists(HISTORICAL_DATA_FILE)) {
         File file = SPIFFS.open(HISTORICAL_DATA_FILE, "r");
         if (file && file.size() > 0) {
+            // 根据可能的最大数据量调整JSON文档大小
             DynamicJsonDocument doc(min((size_t)(1024 * 16), (size_t)(HISTORICAL_DATA_POINTS * 250)));
             DeserializationError error = deserializeJson(doc, file);
             if (error) {
@@ -188,7 +228,6 @@ void loadHistoricalDataFromFile(CircularBuffer& histBuffer) {
                     SensorDataPoint dp;
                     dp.timestamp = obj["ts"]; 
                     dp.isTimeRelative = obj["rel"] | false;
-                    // [修复] 按整型加载历史温湿度
                     dp.temp = obj["t"].as<int>();
                     dp.hum = obj["h"].as<int>();
                     dp.gas.co = obj["co"];
@@ -217,7 +256,6 @@ void saveHistoricalDataToFile(const CircularBuffer& histBuffer) {
             JsonObject obj = arr.createNestedObject();
             obj["ts"] = dp.timestamp;
             obj["rel"] = dp.isTimeRelative;
-            // [修复] 保存整型温湿度
             obj["t"] = dp.temp;
             obj["h"] = dp.hum;
             obj["co"] = dp.gas.co;
@@ -277,7 +315,6 @@ void CircularBuffer::clear() {
 
 // -- 数据处理函数 --
 void addHistoricalDataPoint(CircularBuffer& histBuffer, const DeviceState& state) {
-    // [修复] 检查温湿度是否为初始值0，而不是isnan
     if (state.temperature == 0 && state.humidity == 0 && isnan(state.gasPpmValues.co)) return;
     SensorDataPoint dp;
     extern bool ntpSynced;

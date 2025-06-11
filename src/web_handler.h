@@ -5,7 +5,6 @@
 #include <map>
 #include <functional>
 
-// <-- 新增: 包含以下头文件以定义相关类型 -->
 #include <ESPAsyncWebServer.h>
 #include <WebSocketsServer.h>
 #include <ArduinoJson.h>
@@ -46,9 +45,10 @@ void handleWebSocketMessage(uint8_t clientNum, const JsonDocument& doc, JsonDocu
 
 // -- WebSocket 数据发送 --
 void sendSensorDataToClients(const DeviceState& state, uint8_t specificClientNum = 255);
-// [修复] 将参数 wifiStatus 重命名为 currentWifiState 来解决IntelliSense的解析问题
 void sendWifiStatusToClients(const WifiState& currentWifiState, uint8_t specificClientNum = 255);
 void sendHistoricalDataToClient(uint8_t clientNum, const CircularBuffer& histBuffer);
 void sendCurrentSettingsToClient(uint8_t clientNum, const DeviceConfig& config);
+void sendCalibrationStatusToClients(uint8_t specificClientNum = 255); // 新增: 发送校准状态
+
 
 #endif // WEB_HANDLER_H

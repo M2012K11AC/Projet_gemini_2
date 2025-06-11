@@ -78,7 +78,18 @@
     "ws_disconnected_retry_attempt": "WebSocket 已断开。正在尝试重连... ({attempts}/{maxAttempts})",
     "ws_reconnect_failed": "WebSocket 重连失败。请检查设备连接或刷新页面。",
     "ws_error": "WebSocket 连接错误。",
-    "ws_not_connected": "WebSocket 未连接."
+    "ws_not_connected": "WebSocket 未连接.",
+    "sensor_calibration": "传感器校准",
+    "calibration_instructions": "要校准传感器，请将设备放置在通风良好、空气洁净的环境中（最好是室外）。点击“开始校准”按钮。校准过程将持续约1分钟，请勿移动设备。校准完成后，设备将自动保存新值并重启。",
+    "current_r0_label": "当前R0:",
+    "measured_r0_label": "测量R0:",
+    "calibration_progress": "校准进度:",
+    "start_calibration": "开始校准",
+    "calibration_confirm": "请确认设备已在洁净空气中且稳定。校准将开始，耗时约1分钟。",
+    "calibration_starting": "正在启动校准...",
+    "calibration_inprogress": "校准中，请勿移动设备...",
+    "calibration_success_reboot": "校准成功！设备将在3秒后重启。",
+    "calibration_failed": "校准失败，请重试。"
   },
   "fr": {
     "title": "Moniteur d'Environnement ESP32",
@@ -159,6 +170,17 @@
     "ws_disconnected_retry_attempt": "WebSocket déconnecté. Tentative de reconnexion... ({attempts}/{maxAttempts})",
     "ws_reconnect_failed": "Échec de la reconnexion. Veuillez vérifier la connexion ou rafraîchir la page.",
     "ws_error": "Erreur de connexion WebSocket.",
-    "ws_not_connected": "WebSocket non connecté."
+    "ws_not_connected": "WebSocket non connecté.",
+    "sensor_calibration": "Étalonnage du Capteur",
+    "calibration_instructions": "Pour étalonner le capteur, placez l'appareil dans un environnement bien ventilé avec de l'air pur (de préférence à l'extérieur). Cliquez sur 'Démarrer l'Étalonnage'. Le processus dure environ 1 minute, ne déplacez pas l'appareil. Une fois terminé, l'appareil enregistrera les nouvelles valeurs et redémarrera automatiquement.",
+    "current_r0_label": "R0 Actuel:",
+    "measured_r0_label": "R0 Mesuré:",
+    "calibration_progress": "Progression de l'étalonnage:",
+    "start_calibration": "Démarrer l'Étalonnage",
+    "calibration_confirm": "Veuillez confirmer que l'appareil est dans un air pur et stable. L'étalonnage va commencer et durera environ 1 minute.",
+    "calibration_starting": "Démarrage de l'étalonnage...",
+    "calibration_inprogress": "Étalonnage en cours, ne déplacez pas l'appareil...",
+    "calibration_success_reboot": "Étalonnage réussi ! L'appareil va redémarrer dans 3 secondes.",
+    "calibration_failed": "Échec de l'étalonnage, veuillez réessayer."
   }
 }

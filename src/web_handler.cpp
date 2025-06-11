@@ -37,6 +37,7 @@ void handleSaveLedBrightnessRequest(uint8_t clientNum, const JsonDocument& reque
 void handleScanWifiRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response);
 void handleConnectWifiRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response);
 void handleResetSettingsRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response);
+void handleStartCalibrationRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response); // 新增
 void startWifiScan(uint8_t clientNum, WifiState& wifiStatus, JsonDocument& responseDoc);
 
 // ==========================================================================
@@ -332,6 +333,7 @@ void setupWebSocketActions() {
     wsActionHandlers["scanWifi"] = handleScanWifiRequest;
     wsActionHandlers["connectWifi"] = handleConnectWifiRequest;
     wsActionHandlers["resetSettings"] = handleResetSettingsRequest;
+    wsActionHandlers["startCalibration"] = handleStartCalibrationRequest; // 新增
 }
 
 void handleWebSocketMessage(uint8_t clientNum, const JsonDocument& doc, JsonDocument& responseDoc) {
@@ -439,11 +441,19 @@ void handleResetSettingsRequest(uint8_t clientNum, const JsonDocument& request, 
     ESP.restart();
 }
 
+// 新增: 处理校准请求
+void handleStartCalibrationRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) {
+    P_PRINTLN("[WS] 收到启动校准请求.");
+    startCalibration(); // 调用 sensor_handler 中的函数
+    response["type"] = "calibrationStatus";
+    response["success"] = true;
+    response["message"] = "Calibration process initiated.";
+}
+
 void sendSensorDataToClients(const DeviceState& state, uint8_t specificClientNum) {
     DynamicJsonDocument doc(1024); 
     doc["type"] = "sensorData";
 
-    // [修复] 恢复为标准的JSON赋值方法，不再使用不存在的 .set()
     if (isnan(state.temperature)) doc["temperature"] = nullptr; else doc["temperature"] = state.temperature;
     if (isnan(state.humidity)) doc["humidity"] = nullptr; else doc["humidity"] = state.humidity;
     
@@ -507,7 +517,6 @@ void sendHistoricalDataToClient(uint8_t clientNum, const CircularBuffer& histBuf
         dataPoint["time"] = dp.timeStr;
         dataPoint["rel"] = dp.isTimeRelative; 
         
-        // [修复] 恢复为标准的JSON赋值方法
         dataPoint["temp"] = dp.temp;
         dataPoint["hum"] = dp.hum;
         dataPoint["co"] = dp.gas.co;
@@ -543,9 +552,48 @@ void sendCurrentSettingsToClient(uint8_t clientNum, const DeviceConfig& config) 
     thresholdsObj["no2PpmMax"] = config.thresholds.no2PpmMax;   
     thresholdsObj["c2h5ohPpmMax"] = config.thresholds.c2h5ohPpmMax; 
     thresholdsObj["vocPpmMax"] = config.thresholds.vocPpmMax;
+
+    // 新增: 发送R0值
+    JsonObject r0Obj = settingsObj.createNestedObject("r0Values");
+    r0Obj["co"] = config.r0Values.co;
+    r0Obj["no2"] = config.r0Values.no2;
+    r0Obj["c2h5oh"] = config.r0Values.c2h5oh;
+    r0Obj["voc"] = config.r0Values.voc;
+
     settingsObj["currentSSID"] = WiFi.isConnected() ? WiFi.SSID() : config.currentSsidForSettings;
     settingsObj["ledBrightness"] = config.ledBrightness;
     String jsonString;
     serializeJson(doc, jsonString);
     webSocket.sendTXT(clientNum, jsonString);
+}
+
+// 新增: 发送校准状态
+void sendCalibrationStatusToClients(uint8_t specificClientNum) {
+    DynamicJsonDocument doc(1024);
+    doc["type"] = "calibrationStatusUpdate";
+
+    JsonObject calStatus = doc.createNestedObject("calibration");
+    calStatus["state"] = currentState.calibrationState; // 0: IDLE, 1: IN_PROGRESS, 2: COMPLETED, 3: FAILED
+    calStatus["progress"] = currentState.calibrationProgress;
+
+    JsonObject currentR0 = calStatus.createNestedObject("currentR0");
+    currentR0["co"] = currentConfig.r0Values.co;
+    currentR0["no2"] = currentConfig.r0Values.no2;
+    currentR0["c2h5oh"] = currentConfig.r0Values.c2h5oh;
+    currentR0["voc"] = currentConfig.r0Values.voc;
+    
+    JsonObject measuredR0 = calStatus.createNestedObject("measuredR0");
+    if (isnan(currentState.measuredR0.co)) measuredR0["co"] = nullptr; else measuredR0["co"] = currentState.measuredR0.co;
+    if (isnan(currentState.measuredR0.no2)) measuredR0["no2"] = nullptr; else measuredR0["no2"] = currentState.measuredR0.no2;
+    if (isnan(currentState.measuredR0.c2h5oh)) measuredR0["c2h5oh"] = nullptr; else measuredR0["c2h5oh"] = currentState.measuredR0.c2h5oh;
+    if (isnan(currentState.measuredR0.voc)) measuredR0["voc"] = nullptr; else measuredR0["voc"] = currentState.measuredR0.voc;
+
+    String jsonString;
+    serializeJson(doc, jsonString);
+
+    if (specificClientNum != 255 && specificClientNum < webSocket.connectedClients()) {
+        webSocket.sendTXT(specificClientNum, jsonString);
+    } else {
+        webSocket.broadcastTXT(jsonString);
+    }
 }

@@ -1,5 +1,5 @@
 // ==========================================================================
-// == ESP32 环境监测器前端脚本 (V3 - 重构版) ==
+// == ESP32 环境监测器前端脚本 (V4.1 - 细节优化) ==
 // ==========================================================================
 
 const App = {
@@ -12,7 +12,7 @@ const App = {
     wsReconnectAttempts: 0,
     currentWsStatusKey: '',
     statusBannerTimeout: null,
-    
+
     // 图表相关的状态
     charts: {
         tempHum: {
@@ -42,7 +42,7 @@ const App = {
     // 页面加载和语言切换
     initPage() {
         this.connectWebSocket();
-        
+
         // 根据页面ID判断需要初始化哪些内容
         if (document.querySelector('body')) { // 通用
             document.getElementById('lang-zh')?.addEventListener('click', () => this.setLanguage('zh'));
@@ -51,12 +51,12 @@ const App = {
         if (document.getElementById('tempHumChart')) { // 主页
             this.initTempHumChart();
             this.initGasChart();
-        } 
+        }
         if (document.getElementById('wifiConfigForm')) { // 设置页
             this.setupSettingsPageListeners();
         }
     },
-    
+
     async loadTranslations() {
         try {
             const response = await fetch('lang.json');
@@ -70,10 +70,10 @@ const App = {
     setLanguage(lang) {
         this.currentLang = lang;
         localStorage.setItem('preferredLang', lang);
-        
+
         document.querySelectorAll('.lang-button').forEach(btn => btn.classList.remove('active'));
         document.getElementById(`lang-${lang}`)?.classList.add('active');
-        
+
         this.applyTranslations();
         // 仅在 setLanguage 第一次被调用时初始化页面
         if (!this.websocket) {
@@ -105,7 +105,7 @@ const App = {
             const key = el.getAttribute('data-translate-title');
             if (this.translations[lang]?.[key]) el.title = this.translations[lang][key];
         });
-    
+
         // 更新图表翻译
         this.updateChartTranslations();
         // 更新状态横幅的翻译
@@ -127,9 +127,9 @@ const App = {
 
     onWsOpen(event) {
         console.log('WebSocket connection opened successfully.');
-        this.wsReconnectAttempts = 0; 
-        this.updateConnectionBanner('ws_connected', 'connected', true); 
-        
+        this.wsReconnectAttempts = 0;
+        this.updateConnectionBanner('ws_connected', 'connected', true);
+
         // 连接成功后根据页面请求初始数据
         if (document.getElementById('wifiConfigForm')) {
             this.sendMessage({ action: "getCurrentSettings" });
@@ -160,6 +160,7 @@ const App = {
                 this.updateStatusMessage('reset-status', d.message, d.success ? 'success' : 'failed');
                 if(d.success) alert(this.translations[this.currentLang]?.settings_reset_success || "Settings reset. Device will restart.");
             },
+            'calibrationStatusUpdate': (d) => this.handleCalibrationStatus(d.calibration),
             'error': (d) => {
                 console.error('Error message from server:', d.message);
                 this.updateStatusMessage('general-status', d.message, 'failed');
@@ -174,14 +175,14 @@ const App = {
 
     onWsClose(event) {
         console.log('WebSocket connection closed. Event:', event);
-        
+
         if (this.wsReconnectAttempts < this.wsMaxReconnectAttempts) {
             this.wsReconnectAttempts++;
             this.updateConnectionBanner('ws_disconnected_retry_attempt', 'disconnected', false);
             console.log(`Reconnecting in ${this.wsReconnectInterval / 1000}s (attempt ${this.wsReconnectAttempts}/${this.wsMaxReconnectAttempts})`);
             setTimeout(() => this.connectWebSocket(), this.wsReconnectInterval);
         } else {
-            this.updateConnectionBanner('ws_reconnect_failed', 'error'); 
+            this.updateConnectionBanner('ws_reconnect_failed', 'error');
             console.error('WebSocket reconnection failed after multiple attempts.');
         }
     },
@@ -201,37 +202,34 @@ const App = {
 
     // 4. 数据处理和UI更新
     handleSensorData(data) {
-        // [修复] 不再使用 toFixed，直接显示从后端接收到的值
         this.updateElementText('tempVal', data.temperature !== null ? data.temperature : '--');
         this.updateElementText('humVal', data.humidity !== null ? data.humidity : '--');
         this.updateElementText('coVal', data.gasPpm?.co?.toFixed(2) || '--');
         this.updateElementText('no2Val', data.gasPpm?.no2?.toFixed(2) || '--');
         this.updateElementText('c2h5ohVal', data.gasPpm?.c2h5oh?.toFixed(1) || '--');
         this.updateElementText('vocVal', data.gasPpm?.voc?.toFixed(2) || '--');
-    
-        // 更新状态指示灯
+
         this.updateStatusIndicator('temp-status-indicator', data.tempStatus);
         this.updateStatusIndicator('hum-status-indicator', data.humStatus);
         this.updateStatusIndicator('gasCo-status-indicator', data.gasCoStatus);
         this.updateStatusIndicator('gasNo2-status-indicator', data.gasNo2Status);
         this.updateStatusIndicator('gasC2h5oh-status-indicator', data.gasC2h5ohStatus);
         this.updateStatusIndicator('gasVoc-status-indicator', data.gasVocStatus);
-        
-        // 向图表添加新数据
+
         if (data.timeStr) {
             this.addDataToTempHumChart(data.timeStr, data.temperature, data.humidity);
             this.addDataToGasChart(data.timeStr, data.gasPpm);
         }
     },
-    
+
     handleWifiStatus(data) {
         const statusTextEl = document.getElementById('wifiStatusText');
         const ntpStatusEl = document.getElementById('ntpStatusText');
-    
+
         if (statusTextEl) {
             let translationKey = 'wifi_disconnected';
             let statusClass = 'status-neutral'; // Default state: neutral color
-    
+
             if (data.connected) {
                 translationKey = 'wifi_connected_to';
                 statusClass = 'status-connected'; // Green
@@ -242,19 +240,19 @@ const App = {
                 translationKey = 'wifi_connection_failed';
                 statusClass = 'status-failed'; // Red
             }
-            
+
             let text = this.translations[this.currentLang]?.[translationKey] || translationKey;
             if (data.connected) text = text.replace('{ssid}', data.ssid);
             if (data.connecting_attempt_ssid) text = text.replace('{ssid}', data.connecting_attempt_ssid);
-            
+
             statusTextEl.textContent = text;
             statusTextEl.className = `status-text-dynamic ${statusClass}`;
-    
+
             if (!data.connected && data.ap_mode) {
                 statusTextEl.textContent += ` (AP: ${data.ap_ssid || 'ESP32_Sensor_Hub_V2'})`;
             }
         }
-        
+
         if (ntpStatusEl) {
             let key = data.ntp_synced ? 'ntp_status_synced' : 'ntp_status_failed';
             ntpStatusEl.textContent = this.translations[this.currentLang]?.[key] || key;
@@ -271,7 +269,7 @@ const App = {
             indicator.className = 'status-indicator ' + (status || '');
         }
     },
-    
+
     updateElementText(id, text) {
         const element = document.getElementById(id);
         if (element) element.textContent = text;
@@ -279,19 +277,19 @@ const App = {
 
     updateConnectionBanner(statusKey, bannerClass, autoHide = false) {
         const statusBanner = document.getElementById('connection-status-banner');
-        this.currentWsStatusKey = statusKey; 
+        this.currentWsStatusKey = statusKey;
 
         if (statusBanner) {
             this.updateConnectionBannerText(); // 更新文本
             statusBanner.className = `status-banner ${bannerClass}`;
             statusBanner.style.display = 'block';
-    
+
             if (this.statusBannerTimeout) clearTimeout(this.statusBannerTimeout);
             if (autoHide) {
                 this.statusBannerTimeout = setTimeout(() => {
                     statusBanner.style.display = 'none';
-                    this.currentWsStatusKey = ''; 
-                }, 3000); 
+                    this.currentWsStatusKey = '';
+                }, 3000);
             }
         }
     },
@@ -305,7 +303,7 @@ const App = {
         this.updateElementText('connection-status-banner', message);
     },
 
-    // 5. Chart.js 逻辑
+    // 5. Chart.js Logic
     initTempHumChart() {
         const ctx = document.getElementById('tempHumChart')?.getContext('2d');
         if (!ctx) return;
@@ -315,21 +313,21 @@ const App = {
             data: {
                 labels: this.charts.tempHum.labels,
                 datasets: [
-                    { 
-                        label: this.translations[this.currentLang]?.chart_temperature_label || 'Temperature (°C)', 
-                        data: this.charts.tempHum.datasets.temp, 
-                        borderColor: 'rgba(255, 99, 132, 1)', 
-                        yAxisID: 'yTemp', 
-                        tension: 0.3, 
-                        pointRadius: 0 
+                    {
+                        label: this.translations[this.currentLang]?.chart_temperature_label || 'Temperature (°C)',
+                        data: this.charts.tempHum.datasets.temp,
+                        borderColor: 'rgba(255, 99, 132, 1)',
+                        yAxisID: 'yTemp',
+                        tension: 0.3,
+                        pointRadius: 0
                     },
-                    { 
-                        label: this.translations[this.currentLang]?.chart_humidity_label || 'Humidity (%)', 
-                        data: this.charts.tempHum.datasets.hum, 
-                        borderColor: 'rgba(54, 162, 235, 1)', 
-                        yAxisID: 'yHum', 
-                        tension: 0.3, 
-                        pointRadius: 0 
+                    {
+                        label: this.translations[this.currentLang]?.chart_humidity_label || 'Humidity (%)',
+                        data: this.charts.tempHum.datasets.hum,
+                        borderColor: 'rgba(54, 162, 235, 1)',
+                        yAxisID: 'yHum',
+                        tension: 0.3,
+                        pointRadius: 0
                     }
                 ]
             },
@@ -357,7 +355,7 @@ const App = {
                 ]
             },
             options: this.getCommonChartOptions({
-                y: { type: 'linear', position: 'left', beginAtZero: true, title: { display: true, text: 'PPM' } }
+                y: { type: 'logarithmic', position: 'left', title: { display: true, text: 'PPM' } }
             })
         });
     },
@@ -407,13 +405,11 @@ const App = {
     populateChartsWithHistoricalData(history) {
         if (!history || !Array.isArray(history)) return;
 
-        // Clear existing data
         Object.values(this.charts).forEach(chart => {
             chart.labels.length = 0;
             Object.values(chart.datasets).forEach(d => d.length = 0);
         });
-        
-        // Populate with new data
+
         history.forEach(record => {
             this.charts.tempHum.labels.push(record.time);
             this.charts.tempHum.datasets.temp.push(record.temp);
@@ -426,7 +422,6 @@ const App = {
             this.charts.gas.datasets.voc.push(record.voc);
         });
 
-        // Update both charts
         this.charts.tempHum.instance?.update('none');
         this.charts.gas.instance?.update('none');
         console.log("Charts populated with historical data. Points:", history.length);
@@ -435,7 +430,7 @@ const App = {
     updateChartTranslations() {
         const lang = this.currentLang;
         if (!this.translations[lang]) return;
-    
+
         const tempHumChart = this.charts.tempHum.instance;
         if (tempHumChart) {
             tempHumChart.data.datasets[0].label = this.translations[lang].chart_temperature_label || 'Temperature (°C)';
@@ -444,7 +439,7 @@ const App = {
             tempHumChart.options.scales.yHum.title.text = this.translations[lang].unit_percent || '%';
             tempHumChart.update('none');
         }
-    
+
         const gasChart = this.charts.gas.instance;
         if (gasChart) {
             gasChart.data.datasets[0].label = this.translations[lang].gas_co_label || 'CO';
@@ -463,7 +458,7 @@ const App = {
         document.getElementById('connectWifiButton')?.addEventListener('click', () => this.handleConnectWifi());
         document.getElementById('saveThresholdsButton')?.addEventListener('click', () => this.handleSaveThresholds());
         document.getElementById('resetSettingsButton')?.addEventListener('click', () => this.handleResetSettings());
-        
+
         const brightnessSlider = document.getElementById('ledBrightness');
         const brightnessValueDisplay = document.getElementById('ledBrightnessValue');
         if (brightnessSlider && brightnessValueDisplay) {
@@ -472,6 +467,62 @@ const App = {
             });
         }
         document.getElementById('saveLedBrightnessButton')?.addEventListener('click', () => this.handleSaveLedBrightness());
+        document.getElementById('startCalibrationButton')?.addEventListener('click', () => this.handleStartCalibration());
+    },
+
+    handleStartCalibration() {
+        const confirmationText = this.translations[this.currentLang]?.calibration_confirm || "请确认设备已在洁净空气中且稳定。校准将开始，耗时约1分钟。";
+        if (confirm(confirmationText)) {
+            this.sendMessage({ action: 'startCalibration' });
+            this.updateStatusMessage('calibration-status', this.translations[this.currentLang]?.calibration_starting || '正在启动校准...', 'connecting');
+        }
+    },
+
+    handleCalibrationStatus(data) {
+        const caliForm = document.getElementById('calibrationSettingsForm');
+        const caliButton = document.getElementById('startCalibrationButton');
+        const progressContainer = document.getElementById('calibration-progress-container');
+        const progressBar = document.getElementById('calibration-progress-bar');
+        const statusEl = document.getElementById('calibration-status');
+
+        if (!caliForm || !caliButton || !progressContainer || !progressBar || !statusEl) return;
+        
+        // 0: IDLE, 1: IN_PROGRESS, 2: COMPLETED, 3: FAILED
+        switch (data.state) {
+            case 1: // In Progress
+                progressContainer.style.display = 'block';
+                caliForm.classList.add('calibrating');
+                caliButton.disabled = true;
+                
+                progressBar.style.width = `${data.progress}%`;
+                progressBar.textContent = `${data.progress}%`;
+                this.updateStatusMessage('calibration-status', this.translations[this.currentLang]?.calibration_inprogress || '校准中，请勿移动设备...', 'connecting');
+                
+                this.updateElementText('measured_r0_co', data.measuredR0.co?.toFixed(2) || '--');
+                this.updateElementText('measured_r0_no2', data.measuredR0.no2?.toFixed(2) || '--');
+                this.updateElementText('measured_r0_c2h5oh', data.measuredR0.c2h5oh?.toFixed(2) || '--');
+                this.updateElementText('measured_r0_voc', data.measuredR0.voc?.toFixed(2) || '--');
+                break;
+            case 2: // Completed
+                progressBar.style.width = '100%';
+                progressBar.textContent = '100%';
+                caliButton.disabled = true;
+                this.updateStatusMessage('calibration-status', this.translations[this.currentLang]?.calibration_success_reboot || '校准成功！设备将在3秒后重启。', 'success');
+                break;
+            case 3: // Failed
+                progressContainer.style.display = 'none';
+                caliForm.classList.remove('calibrating');
+                caliButton.disabled = false;
+                this.updateStatusMessage('calibration-status', this.translations[this.currentLang]?.calibration_failed || '校准失败，请重试。', 'failed');
+                break;
+            case 0: // Idle
+            default:
+                progressContainer.style.display = 'none';
+                caliForm.classList.remove('calibrating');
+                caliButton.disabled = false;
+                statusEl.textContent = '';
+                break;
+        }
     },
 
     handleScanWifi() {
@@ -482,8 +533,8 @@ const App = {
     displayWifiScanResults(data) {
         const container = document.getElementById('ssid-list-container');
         if (!container) return;
-        
-        container.innerHTML = ''; 
+
+        container.innerHTML = '';
         if (data.error) {
             this.updateStatusMessage('scan-status', data.error, 'failed');
             container.style.display = 'none';
@@ -498,7 +549,7 @@ const App = {
                 button.textContent = `${net.ssid} (${net.rssi} dBm)`;
                 button.onclick = () => {
                     document.getElementById('wifiSSID').value = net.ssid;
-                    container.style.display = 'none'; 
+                    container.style.display = 'none';
                 };
                 container.appendChild(button);
             });
@@ -513,7 +564,7 @@ const App = {
 
     handleConnectWifi() {
         const ssid = document.getElementById('wifiSSID')?.value.trim();
-        const password = document.getElementById('wifiPassword')?.value; 
+        const password = document.getElementById('wifiPassword')?.value;
         if (!ssid) {
             this.updateStatusMessage('connect-wifi-status', this.translations[this.currentLang]?.wifi_ssid_empty || 'SSID cannot be empty.', 'failed');
             return;
@@ -525,7 +576,6 @@ const App = {
     handleSaveThresholds() {
         const thresholds = {
             action: 'saveThresholds',
-            // [修复] 使用 parseInt 解析整型阈值
             tempMin: parseInt(document.getElementById('tempMin')?.value, 10),
             tempMax: parseInt(document.getElementById('tempMax')?.value, 10),
             humMin: parseInt(document.getElementById('humMin')?.value, 10),
@@ -570,6 +620,13 @@ const App = {
             const fields = ['tempMin', 'tempMax', 'humMin', 'humMax', 'coPpmMax', 'no2PpmMax', 'c2h5ohPpmMax', 'vocPpmMax'];
             fields.forEach(field => this.updateElementValue(field, t[field]));
         }
+        if (settings.r0Values) {
+            const r0 = settings.r0Values;
+            this.updateElementText('current_r0_co', r0.co?.toFixed(2) || '--');
+            this.updateElementText('current_r0_no2', r0.no2?.toFixed(2) || '--');
+            this.updateElementText('current_r0_c2h5oh', r0.c2h5oh?.toFixed(2) || '--');
+            this.updateElementText('current_r0_voc', r0.voc?.toFixed(2) || '--');
+        }
         this.updateElementValue('wifiSSID', settings.currentSSID);
         this.updateElementValue('ledBrightness', settings.ledBrightness);
         const ledValue = document.getElementById('ledBrightnessValue');
@@ -585,22 +642,20 @@ const App = {
         const el = document.getElementById(elementId);
         if (el) {
             el.textContent = message;
-            
-            // 重置类并应用新的状态类
+
             el.classList.remove('status-connecting', 'status-success', 'status-failed');
 
             if (status !== 'neutral') {
                 el.classList.add(`status-${status}`);
             }
 
-            // 在延时后清除消息，但“连接中”状态除外
             if (status !== 'connecting') {
                  setTimeout(() => {
                     if (el.textContent === message) {
                        el.textContent = '';
-                       el.classList.remove('status-connecting', 'status-success', 'status-failed'); // 清除时也移除类
+                       el.classList.remove('status-connecting', 'status-success', 'status-failed');
                     }
-                }, 5000); 
+                }, 5000);
             }
         }
     }

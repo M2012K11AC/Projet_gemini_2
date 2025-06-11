@@ -15,8 +15,14 @@ void updateLedBrightness(uint8_t brightness_percent);
 void updateLedStatus(const DeviceState& state, const WifiState& wifiStatus);
 void controlBuzzer(DeviceState& state);
 
-// -- 传感器数据处理 --
-void readSensors(DeviceState& state);
+// -- 传感器数据处理与计算 --
+void readSensors(DeviceState& state, const DeviceConfig& config);
+void calculatePpm(DeviceState& state, const DeviceConfig& config);
 void checkAlarms(DeviceState& state, const DeviceConfig& config);
+
+// -- 新增: 传感器校准 --
+void startCalibration();
+void calibrationTask(void *pvParameters);
+
 
 #endif // SENSOR_HANDLER_H

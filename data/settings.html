@@ -19,6 +19,7 @@
 
     <div class="container">
         <div id="connection-status-banner" class="status-banner" style="display:none;"></div>
+        
         <form id="wifiConfigForm">
             <fieldset>
                 <legend data-translate="wifi_config">WiFi 配置</legend>
@@ -38,6 +39,53 @@
             </fieldset>
         </form>
 
+        <!-- 传感器校准部分 (已移动到此处) -->
+        <form id="calibrationSettingsForm">
+            <fieldset>
+                <legend data-translate="sensor_calibration">传感器校准</legend>
+                <p class="calibration-instructions" data-translate="calibration_instructions">
+                    要校准传感器，请将设备放置在通风良好、空气洁净的环境中（最好是室外）。点击“开始校准”按钮。校准过程将持续约1分钟，请勿移动设备。校准完成后，设备将自动保存新值并重启。
+                </p>
+
+                <!-- 新的 R0 显示样式 -->
+                <div class="calibration-r0-container">
+                    <div class="r0-card">
+                        <span class="gas-name">CO</span>
+                        <div class="r0-value"><span data-translate="current_r0_label">当前R0:</span> <span id="current_r0_co">--</span> kΩ</div>
+                        <div class="r0-value measured"><span data-translate="measured_r0_label">测量R0:</span> <span id="measured_r0_co">--</span> kΩ</div>
+                    </div>
+                    <div class="r0-card">
+                        <span class="gas-name">NO2</span>
+                        <div class="r0-value"><span data-translate="current_r0_label">当前R0:</span> <span id="current_r0_no2">--</span> kΩ</div>
+                        <div class="r0-value measured"><span data-translate="measured_r0_label">测量R0:</span> <span id="measured_r0_no2">--</span> kΩ</div>
+                    </div>
+                    <div class="r0-card">
+                        <span class="gas-name">C2H5OH</span>
+                        <div class="r0-value"><span data-translate="current_r0_label">当前R0:</span> <span id="current_r0_c2h5oh">--</span> kΩ</div>
+                        <div class="r0-value measured"><span data-translate="measured_r0_label">测量R0:</span> <span id="measured_r0_c2h5oh">--</span> kΩ</div>
+                    </div>
+                    <div class="r0-card">
+                        <span class="gas-name">VOC</span>
+                        <div class="r0-value"><span data-translate="current_r0_label">当前R0:</span> <span id="current_r0_voc">--</span> kΩ</div>
+                        <div class="r0-value measured"><span data-translate="measured_r0_label">测量R0:</span> <span id="measured_r0_voc">--</span> kΩ</div>
+                    </div>
+                </div>
+
+                <!-- 进度条 -->
+                <div id="calibration-progress-container" style="display: none;">
+                    <label data-translate="calibration_progress">校准进度:</label>
+                    <div class="progress-bar-background">
+                        <div id="calibration-progress-bar" style="width: 0%;">0%</div>
+                    </div>
+                </div>
+
+                <div class="button-group">
+                    <button type="button" id="startCalibrationButton" data-translate="start_calibration">开始校准</button>
+                </div>
+                <div id="calibration-status" class="status-text"></div>
+            </fieldset>
+        </form>
+        
         <form id="thresholdSettingsForm">
             <fieldset>
                 <legend data-translate="alarm_thresholds">报警阈值设置</legend>
@@ -46,7 +94,6 @@
                 <div class="threshold-group">
                     <div>
                         <label for="tempMin" data-translate="min_val">最小值:</label>
-                        <!-- [修复] 移除 step 属性以适应整数输入 -->
                         <input type="number" id="tempMin" name="tempMin" required>
                     </div>
                     <div>

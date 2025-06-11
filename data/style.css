@@ -10,6 +10,8 @@
     --info-color: #17a2b8;    /* 信息蓝，用于连接中/返回按钮 */
     --info-hover-color: #138496;
     --initializing-color: #fd7e14; /* 橙色，用于预热状态 */
+    --calibrating-color: #6f42c1; /* 紫色，用于校准按钮 */
+    --calibrating-hover-color: #5a349a;
 
     --text-color: #333;
     --text-light-color: #555;
@@ -119,7 +121,6 @@ h3 {
 
 .sensor-grid {
     display: grid;
-    /* 调整minmax以适应更多卡片，例如每行最多3个 */
     grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); 
     gap: 25px;
     margin-bottom: 35px;
@@ -157,7 +158,7 @@ h3 {
     width: 20px;
     height: 20px;
     border-radius: 50%;
-    background-color: var(--secondary-color); /* Default grey for unknown */
+    background-color: var(--secondary-color);
     display: inline-block;
     box-shadow: 0 0 6px rgba(0,0,0,0.15);
     transition: background-color 0.3s ease;
@@ -165,14 +166,17 @@ h3 {
 .status-indicator.normal { background-color: var(--success-color); }
 .status-indicator.warning { background-color: var(--danger-color); }
 .status-indicator.disconnected {
-    background-color: var(--primary-color); /* Blue for disconnected */
+    background-color: var(--primary-color);
     animation: blink 1.5s infinite ease-in-out;
 }
-.status-indicator.initializing { /* 新增预热状态 */
-    background-color: var(--initializing-color); /* Orange for initializing */
+.status-indicator.initializing {
+    background-color: var(--initializing-color);
     animation: blink-orange 1.2s infinite ease-in-out;
 }
-
+.status-indicator.calibrating {
+    background-color: var(--calibrating-color);
+    animation: blink-purple 1.0s infinite ease-in-out;
+}
 
 @keyframes blink {
     0%, 100% { opacity: 1; transform: scale(1); }
@@ -182,10 +186,14 @@ h3 {
     0%, 100% { opacity: 1; }
     50% { opacity: 0.5; }
 }
+@keyframes blink-purple {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.6; transform: scale(0.9); }
+}
 
 
 .sensor-value {
-    font-size: 2.8em; /* 稍微增大数值显示 */
+    font-size: 2.8em;
     color: var(--primary-color);
     font-weight: bold;
     display: block;
@@ -212,7 +220,7 @@ h3 {
     margin-bottom: 35px;
 }
 .chart-container {
-    height: 380px; /* 增加图表高度 */
+    height: 380px;
     position: relative;
 }
 canvas#sensorDataChart {
@@ -234,7 +242,6 @@ canvas#sensorDataChart {
     color: var(--text-color);
 }
 
-/* WiFi状态文本颜色样式 - 已修正 */
 #wifiStatusText.status-text-dynamic {
     font-weight: 500;
     transition: color 0.3s ease;
@@ -335,6 +342,12 @@ button:active, .button-link:active {
     transform: translateY(2px);
     box-shadow: 0 1px 3px rgba(0,0,0,0.1);
 }
+button:disabled {
+    background-color: var(--secondary-color);
+    cursor: not-allowed;
+    opacity: 0.7;
+}
+
 
 #connectWifiButton, #saveThresholdsButton, #saveLedBrightnessButton {
     background-color: var(--primary-color);
@@ -369,6 +382,13 @@ button:active, .button-link:active {
     box-shadow: var(--box-shadow-hover);
 }
 
+#startCalibrationButton {
+    background-color: var(--calibrating-color);
+}
+#startCalibrationButton:hover:not(:disabled) {
+    background-color: var(--calibrating-hover-color);
+}
+
 small {
     display: block;
     margin-top: -10px;
@@ -389,7 +409,6 @@ small {
     flex-direction: column;
 }
 
-/* Unified Status Text Styling */
 .status-text,
 .scan-status-text {
     margin-top: 12px;
@@ -398,7 +417,7 @@ small {
     min-height: 1.4em;
     text-align: center;
     transition: color 0.3s ease, opacity 0.3s ease;
-    color: var(--neutral-color); /* Default neutral color */
+    color: var(--neutral-color);
 }
 
 .status-connecting {
@@ -442,7 +461,7 @@ form fieldset .button-group button {
     border: 1px solid #ddd;
     border-radius: 5px;
     padding: 8px;
-    display: none; /* 默认隐藏 */
+    display: none;
     background-color: #fff;
     position: relative;
     z-index: 10;
@@ -468,7 +487,6 @@ form fieldset .button-group button {
     background-color: #e9ecef;
 }
 
-/* LED Brightness Slider */
 .slider-container {
     display: flex;
     align-items: center;
@@ -511,11 +529,10 @@ input[type="range"]::-moz-range-thumb {
 }
 #ledBrightnessValue {
     font-weight: 500;
-    min-width: 40px; /* 确保百分比有足够空间 */
+    min-width: 40px;
     text-align: right;
 }
 
-/* Connection Status Banner */
 .status-banner {
     padding: 10px;
     margin-bottom: 15px;
@@ -529,6 +546,95 @@ input[type="range"]::-moz-range-thumb {
 .status-banner.disconnected { background-color: var(--warning-color); color: #333; }
 .status-banner.error { background-color: var(--danger-color); }
 
+/* --- 校准部分的新样式 --- */
+.calibration-instructions {
+    font-size: 0.9em;
+    color: var(--text-light-color);
+    background-color: rgba(0, 123, 255, 0.05);
+    border-left: 4px solid var(--primary-color);
+    padding: 12px 15px;
+    margin: 10px 0 25px 0;
+    border-radius: 0 8px 8px 0;
+}
+
+.calibration-r0-container {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 15px;
+    margin-bottom: 25px;
+}
+
+.r0-card {
+    background-color: #f8f9fa;
+    border: 1px solid #dee2e6;
+    border-radius: 8px;
+    padding: 15px;
+    text-align: left;
+}
+
+.r0-card .gas-name {
+    display: block;
+    font-weight: bold;
+    color: var(--primary-hover-color);
+    font-size: 1.1em;
+    margin-bottom: 8px;
+}
+
+.r0-card .r0-value {
+    font-size: 0.9em;
+    line-height: 1.5;
+}
+.r0-card .r0-value span:first-child {
+    color: var(--text-light-color);
+}
+.r0-card .r0-value span:last-child {
+    font-weight: bold;
+    color: var(--primary-color);
+}
+
+.r0-card .r0-value.measured {
+    display: none; /* 默认隐藏 */
+}
+
+#calibrationSettingsForm.calibrating .r0-card .r0-value.measured {
+    display: block; /* 校准时显示 */
+}
+
+.r0-card .r0-value.measured span:last-child {
+    color: var(--calibrating-color);
+    animation: pulse-text 1.5s infinite;
+}
+
+
+#calibration-progress-container {
+    margin-top: 15px;
+    margin-bottom: 15px;
+}
+
+.progress-bar-background {
+    width: 100%;
+    background-color: #e9ecef;
+    border-radius: 8px;
+    height: 25px;
+    overflow: hidden;
+    box-shadow: inset 0 1px 3px rgba(0,0,0,0.1);
+}
+
+#calibration-progress-bar {
+    width: 0%;
+    height: 100%;
+    background-color: var(--success-color);
+    border-radius: 8px;
+    transition: width 0.3s ease-in-out;
+    text-align: center;
+    color: white;
+    font-weight: bold;
+    font-size: 0.9em;
+    line-height: 25px;
+    white-space: nowrap;
+}
+/* --- 结束校准样式 --- */
+
 
 /* Responsive adjustments */
 @media (max-width: 768px) {
@@ -540,7 +646,7 @@ input[type="range"]::-moz-range-thumb {
     .navbar .nav-icon { font-size: 1.7em; margin-left: 10px; }
 
     .sensor-grid {
-        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); /* 适应小屏幕，每行最多2个 */
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
         gap: 20px;
     }
     .sensor-value { font-size: 2.4em; }
@@ -567,7 +673,7 @@ input[type="range"]::-moz-range-thumb {
     .navbar .lang-button { padding: 5px 8px; min-width: 45px;}
     .navbar .nav-icon { font-size: 1.6em; }
     .sensor-grid {
-        grid-template-columns: 1fr; /* 小屏幕下单列显示 */
+        grid-template-columns: 1fr;
     }
     .sensor-value { font-size: 2.1em; }
     .chart-container { height: 260px; }
