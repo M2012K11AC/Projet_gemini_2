@@ -1,0 +1,302 @@
+{
+  "properties": [
+    {
+      "identifier": "temp_value",
+      "name": "当前温度",
+      "functionType": "u",
+      "accessMode": "r",
+      "desc": "设备测量的当前环境温度。",
+      "dataType": {
+        "type": "float",
+        "specs": {
+          "min": "-40",
+          "max": "200",
+          "step": "0.1",
+          "unit": "°C"
+        }
+      },
+      "required": true
+    },
+    {
+      "identifier": "humidity_value",
+      "name": "当前湿度",
+      "functionType": "u",
+      "accessMode": "r",
+      "desc": "设备测量的当前环境湿度。",
+      "dataType": {
+        "type": "int64",
+        "specs": {
+          "min": "0",
+          "max": "100",
+          "step": "1",
+          "unit": "%"
+        }
+      },
+      "required": true
+    },
+    {
+      "identifier": "CO_ppm",
+      "name": "CO浓度",
+      "functionType": "u",
+      "accessMode": "r",
+      "desc": "一氧化碳浓度",
+      "dataType": {
+        "type": "float",
+        "specs": {
+          "min": "0",
+          "max": "1000",
+          "step": "0.01",
+          "unit": "ppm"
+        }
+      },
+      "required": false
+    },
+    {
+      "identifier": "NO2_ppm",
+      "name": "NO2浓度",
+      "functionType": "u",
+      "accessMode": "r",
+      "desc": "二氧化氮浓度",
+      "dataType": {
+        "type": "float",
+        "specs": {
+          "min": "0",
+          "max": "100",
+          "step": "0.01",
+          "unit": "ppm"
+        }
+      },
+      "required": false
+    },
+    {
+      "identifier": "C2H5OH_ppm",
+      "name": "酒精浓度",
+      "functionType": "u",
+      "accessMode": "r",
+      "desc": "乙醇（酒精）浓度",
+      "dataType": {
+        "type": "float",
+        "specs": {
+          "min": "0",
+          "max": "500",
+          "step": "0.1",
+          "unit": "ppm"
+        }
+      },
+      "required": false
+    },
+    {
+      "identifier": "VOC_ppm",
+      "name": "VOC浓度",
+      "functionType": "u",
+      "accessMode": "r",
+      "desc": "挥发性有机化合物浓度",
+      "dataType": {
+        "type": "float",
+        "specs": {
+          "min": "0",
+          "max": "100",
+          "step": "0.01",
+          "unit": "ppm"
+        }
+      },
+      "required": false
+    },
+    {
+      "identifier": "maxtemp_set",
+      "name": "温度上限设置",
+      "functionType": "u",
+      "accessMode": "rw",
+      "desc": "设置温度报警的上限值",
+      "dataType": {
+        "type": "float",
+        "specs": {
+          "min": "-40",
+          "max": "200",
+          "step": "0.1",
+          "unit": "°C"
+        }
+      },
+      "required": false
+    },
+    {
+      "identifier": "minitemp_set",
+      "name": "温度下限设置",
+      "functionType": "u",
+      "accessMode": "rw",
+      "desc": "设置温度报警的下限值",
+      "dataType": {
+        "type": "float",
+        "specs": {
+          "min": "-40",
+          "max": "200",
+          "step": "0.1",
+          "unit": "°C"
+        }
+      },
+      "required": false
+    },
+    {
+      "identifier": "maxhum_set",
+      "name": "湿度上限设置",
+      "functionType": "u",
+      "accessMode": "rw",
+      "desc": "设置湿度报警的上限值",
+      "dataType": {
+        "type": "int64",
+        "specs": {
+          "min": "0",
+          "max": "100",
+          "step": "1",
+          "unit": "%"
+        }
+      },
+      "required": false
+    },
+    {
+      "identifier": "minihum_set",
+      "name": "湿度下限设置",
+      "functionType": "u",
+      "accessMode": "rw",
+      "desc": "设置湿度报警的下限值",
+      "dataType": {
+        "type": "int64",
+        "specs": {
+          "min": "0",
+          "max": "100",
+          "step": "1",
+          "unit": "%"
+        }
+      },
+      "required": false
+    },
+    {
+      "identifier": "maxCO_set",
+      "name": "CO上限设置",
+      "functionType": "u",
+      "accessMode": "rw",
+      "desc": "设置CO浓度报警的上限值",
+      "dataType": {
+        "type": "float",
+        "specs": {
+          "min": "0",
+          "max": "1000",
+          "step": "0.01",
+          "unit": "ppm"
+        }
+      },
+      "required": false
+    },
+    {
+      "identifier": "maxNO2_set",
+      "name": "NO2上限设置",
+      "functionType": "u",
+      "accessMode": "rw",
+      "desc": "设置NO2浓度报警的上限值",
+      "dataType": {
+        "type": "float",
+        "specs": {
+          "min": "0",
+          "max": "100",
+          "step": "0.01",
+          "unit": "ppm"
+        }
+      },
+      "required": false
+    },
+    {
+      "identifier": "led_switch",
+      "name": "LED开关",
+      "functionType": "u",
+      "accessMode": "rw",
+      "desc": "控制设备上的LED灯的开关",
+      "dataType": {
+        "type": "bool",
+        "specs": {
+          "true": "开启",
+          "false": "关闭"
+        }
+      },
+      "required": false
+    }
+  ],
+  "events": [
+    {
+      "identifier": "temp_alarm",
+      "name": "温度报警",
+      "functionType": "u",
+      "eventType": "alert",
+      "desc": "温度超出阈值时触发",
+      "outputData": [
+        {
+          "identifier": "alarm_status",
+          "name": "报警状态",
+          "dataType": {
+            "type": "enum",
+            "specs": {
+              "0": "恢复正常",
+              "1": "温度过高",
+              "2": "温度过低"
+            }
+          }
+        }
+      ],
+      "required": false
+    },
+    {
+      "identifier": "hum_alarm",
+      "name": "湿度报警",
+      "functionType": "u",
+      "eventType": "alert",
+      "desc": "湿度超出阈值时触发",
+      "outputData": [
+        {
+          "identifier": "alarm_status",
+          "name": "报警状态",
+          "dataType": {
+            "type": "enum",
+            "specs": {
+              "0": "恢复正常",
+              "1": "湿度过高",
+              "2": "湿度过低"
+            }
+          }
+        }
+      ],
+      "required": false
+    },
+    {
+      "identifier": "gas_alarm",
+      "name": "气体报警",
+      "functionType": "u",
+      "eventType": "alert",
+      "desc": "气体浓度超出阈值时触发",
+      "outputData": [
+        {
+          "identifier": "gas_type",
+          "name": "气体类型",
+          "dataType": {
+            "type": "string",
+            "specs": {
+              "length": "10"
+            }
+          }
+        },
+        {
+          "identifier": "current_value",
+          "name": "当前浓度",
+          "dataType": {
+            "type": "float",
+            "specs": {
+              "min": "0",
+              "max": "1000",
+              "step": "0.01"
+            }
+          }
+        }
+      ],
+      "required": false
+    }
+  ],
+  "services": []
+}

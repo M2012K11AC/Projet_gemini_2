@@ -1,6 +1,8 @@
 #include "onenet_handler.h"
 #include "config.h"
-#include "data_manager.h" // 引入data_manager来访问全局的currentState
+#include "data_manager.h" // 引入data_manager来访问全局的currentState和currentConfig
+#include "sensor_handler.h" // 引入sensor_handler以调用LED和Buzzer控制
+
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
@@ -8,188 +10,242 @@
 // ==========================================================================
 // == 模块内部使用的全局对象和变量 ==
 // ==========================================================================
-static WiFiClient espClient; // 用于MQTT的TCP连接客户端
-static PubSubClient mqttClient(espClient); // MQTT客户端实例
-static TaskHandle_t oneNetTaskHandle = NULL; // FreeRTOS任务句柄
-static unsigned long postMsgId = 0; // 用于追踪上报消息的ID
+static WiFiClient espClient; 
+static PubSubClient mqttClient(espClient); 
+static TaskHandle_t oneNetTaskHandle = NULL; // FreeRTOS任务句柄，初始为NULL
+static unsigned long postMsgId = 0;
+static unsigned long postEventId = 0; 
 
-// 上次心跳和数据上报的时间戳
 static unsigned long lastConnectTime = 0;
 static unsigned long lastPostTime = 0;
 
-// 上报周期 (60秒)
-const unsigned long POST_INTERVAL_MS = 60000;
+const unsigned long POST_INTERVAL_MS = 60000; 
 
 // ==========================================================================
 // == 内部函数声明 ==
 // ==========================================================================
-
-/**
- * @brief MQTT消息回调函数.
- * 当订阅的主题收到消息时，此函数被调用.
- * @param topic 消息的主题.
- * @param payload 消息的内容.
- * @param length 消息的长度.
- */
 void mqttCallback(char* topic, byte* payload, unsigned int length);
-
-/**
- * @brief 连接到OneNET MQTT服务器.
- * 如果断开连接，此函数会尝试重新连接.
- */
 void connectToOneNet();
-
-/**
- * @brief 将传感器数据作为物模型属性上报到OneNET.
- */
 void postProperties();
+void replyToCloud(const char* msgId, int code, const char* msg);
 
 // ==========================================================================
 // == 函数实现 ==
 // ==========================================================================
 
-void initOneNetMqttTask() {
-    // 创建一个独立的任务来处理OneNET的连接和数据上报
-    xTaskCreatePinnedToCore(
-        oneNetMqttTask,         // 任务函数
-        "OneNetMqttTask",       // 任务名
-        8192,                   // 任务堆栈大小 (MQTT和JSON需要较大堆栈)
-        NULL,                   // 任务参数
-        1,                      // 任务优先级
-        &oneNetTaskHandle,      // 任务句柄
-        1                       // 在核心1上运行
-    );
-    P_PRINTLN("[OneNET] MQTT处理任务已创建并启动.");
+void startOneNetMqttTask() {
+    if (oneNetTaskHandle == NULL) {
+        xTaskCreatePinnedToCore(
+            oneNetMqttTask,         // 任务函数
+            "OneNetMqttTask",       // 任务名
+            8192,                   // 任务堆栈大小
+            NULL,                   // 任务参数
+            1,                      // 任务优先级
+            &oneNetTaskHandle,      // 任务句柄
+            1                       // 在核心1上运行
+        );
+        P_PRINTLN("[OneNET] MQTT处理任务已创建并启动.");
+    } else {
+        P_PRINTLN("[OneNET] MQTT任务已在运行中, 无需重复启动.");
+    }
 }
 
+void stopOneNetMqttTask() {
+    if (oneNetTaskHandle != NULL) {
+        P_PRINTLN("[OneNET] 正在停止MQTT任务...");
+        mqttClient.disconnect();
+        vTaskDelete(oneNetTaskHandle);
+        oneNetTaskHandle = NULL; // 将句柄置为NULL，表示任务已停止
+        P_PRINTLN("[OneNET] MQTT任务已停止.");
+    }
+}
+
+
 void oneNetMqttTask(void *pvParameters) {
-    // 设置MQTT服务器和回调
     mqttClient.setServer(ONENET_MQTT_SERVER, ONENET_MQTT_PORT);
     mqttClient.setCallback(mqttCallback);
-    mqttClient.setBufferSize(1024); // 增加缓冲区大小以适应OneNET的JSON格式
+    mqttClient.setBufferSize(1024);
 
-    // 任务主循环
     for (;;) {
-        // 1. 检查WiFi是否连接
+        // 虽然任务的启停由WiFi状态控制，但在此处保留检查作为安全措施
         if (WiFi.status() != WL_CONNECTED) {
-            P_PRINTLN("[OneNET Task] WiFi未连接, 等待中...");
-            vTaskDelay(pdMS_TO_TICKS(5000)); // 等待5秒后重试
-            continue; // 继续下一次循环检查
+            P_PRINTLN("[OneNET Task] WiFi断开, 任务暂停等待被外部停止...");
+            vTaskDelay(pdMS_TO_TICKS(5000));
+            continue;
         }
 
-        // 2. 检查并维持MQTT连接
         if (!mqttClient.connected()) {
             connectToOneNet();
         }
 
-        // 3. 维持客户端运行
         mqttClient.loop();
 
-        // 4. 定期上报数据
         if (millis() - lastPostTime >= POST_INTERVAL_MS) {
             lastPostTime = millis();
             if (mqttClient.connected()) {
                 postProperties();
-            } else {
-                P_PRINTLN("[OneNET Task] MQTT未连接, 跳过本次数据上报.");
             }
         }
         
-        // 短暂延时，避免任务完全阻塞CPU
         vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
 void mqttCallback(char* topic, byte* payload, unsigned int length) {
-    P_PRINTF("[OneNET] 收到消息, 主题: %s\n", topic);
+    String topicStr = String(topic);
+    P_PRINTF("[OneNET] 收到消息, 主题: %s\n", topicStr.c_str());
+    
     char payloadStr[length + 1];
     memcpy(payloadStr, payload, length);
     payloadStr[length] = '\0';
     P_PRINTF("[OneNET] 消息内容: %s\n", payloadStr);
 
-    // 在这里可以添加处理云端下发指令的逻辑
-    // 例如，解析JSON并根据指令控制设备
+    if (topicStr.equals(ONENET_TOPIC_PROPERTY_SET)) {
+        DynamicJsonDocument doc(512);
+        DeserializationError error = deserializeJson(doc, payloadStr);
+
+        if (error) {
+            P_PRINTF("[OneNET] JSON解析失败: %s\n", error.c_str());
+            return;
+        }
+
+        const char* msgId = doc["id"];
+        JsonObject params = doc["params"];
+        bool configChanged = false;
+
+        for (JsonPair kv : params) {
+            const char* key = kv.key().c_str();
+            JsonVariant value = kv.value();
+            
+            if (strcmp(key, "maxtemp_set") == 0) {
+                currentConfig.thresholds.tempMax = value.as<int>();
+                configChanged = true;
+            } else if (strcmp(key, "minitemp_set") == 0) {
+                currentConfig.thresholds.tempMin = value.as<int>();
+                configChanged = true;
+            } else if (strcmp(key, "maxhum_set") == 0) {
+                currentConfig.thresholds.humMax = value.as<int>();
+                configChanged = true;
+            } else if (strcmp(key, "minihum_set") == 0) {
+                currentConfig.thresholds.humMin = value.as<int>();
+                configChanged = true;
+            } else if (strcmp(key, "maxCO_set") == 0) {
+                currentConfig.thresholds.coPpmMax = value.as<float>();
+                configChanged = true;
+            } else if (strcmp(key, "maxNO2_set") == 0) {
+                currentConfig.thresholds.no2PpmMax = value.as<float>();
+                configChanged = true;
+            } else if (strcmp(key, "led_switch") == 0) {
+                P_PRINTF("[OneNET] LED 开关指令: %s\n", value.as<bool>() ? "ON" : "OFF");
+            }
+        }
+
+        if (configChanged) {
+            P_PRINTLN("[OneNET] 报警阈值已从云端更新。");
+            saveConfig(currentConfig);
+            checkAlarms(currentState, currentConfig);
+        }
+        replyToCloud(msgId, 200, "success");
+    }
+}
+
+void replyToCloud(const char* msgId, int code, const char* msg) {
+    DynamicJsonDocument replyDoc(128);
+    replyDoc["id"] = msgId;
+    replyDoc["code"] = code;
+    replyDoc["msg"] = msg;
+    String replyStr;
+    serializeJson(replyDoc, replyStr);
+    if(mqttClient.publish(ONENET_TOPIC_PROPERTY_SET_REPLY, replyStr.c_str())) {
+        P_PRINTF("[OneNET] 向云端发送回复: %s\n", replyStr.c_str());
+    } else {
+        P_PRINTLN("[OneNET] ***错误*** 发送回复失败!");
+    }
 }
 
 void connectToOneNet() {
-    // 防止过于频繁地重连
-    if (millis() - lastConnectTime < 5000) {
-        return;
-    }
+    if (millis() - lastConnectTime < 5000) return;
     lastConnectTime = millis();
-
-    P_PRINTLN("[OneNET] 正在尝试连接到MQTT服务器...");
-    
-    // 使用设备ID作为ClientID，产品ID作为用户名，Token作为密码进行连接
+    P_PRINTLN("[OneNET Task] 正在尝试连接到MQTT服务器...");
     if (mqttClient.connect(ONENET_DEVICE_ID, ONENET_PRODUCT_ID, ONENET_TOKEN)) {
-        P_PRINTLN("[OneNET] MQTT连接成功!");
-        
-        // 订阅相关主题
+        P_PRINTLN("[OneNET Task] MQTT连接成功!");
         if (mqttClient.subscribe(ONENET_TOPIC_PROPERTY_SET)) {
-            P_PRINTF("[OneNET] 成功订阅主题: %s\n", ONENET_TOPIC_PROPERTY_SET);
-        } else {
-            P_PRINTF("[OneNET] ***错误*** 订阅主题 %s 失败\n", ONENET_TOPIC_PROPERTY_SET);
-        }
+            P_PRINTF("[OneNET Task] 成功订阅主题: %s\n", ONENET_TOPIC_PROPERTY_SET);
+        } else { P_PRINTF("[OneNET Task] ***错误*** 订阅主题 %s 失败\n", ONENET_TOPIC_PROPERTY_SET); }
         if (mqttClient.subscribe(ONENET_TOPIC_PROPERTY_POST_REPLY)) {
-            P_PRINTF("[OneNET] 成功订阅主题: %s\n", ONENET_TOPIC_PROPERTY_POST_REPLY);
-        } else {
-            P_PRINTF("[OneNET] ***错误*** 订阅主题 %s 失败\n", ONENET_TOPIC_PROPERTY_POST_REPLY);
-        }
-
+            P_PRINTF("[OneNET Task] 成功订阅主题: %s\n", ONENET_TOPIC_PROPERTY_POST_REPLY);
+        } else { P_PRINTF("[OneNET Task] ***错误*** 订阅主题 %s 失败\n", ONENET_TOPIC_PROPERTY_POST_REPLY); }
     } else {
-        P_PRINTF("[OneNET] ***错误*** MQTT连接失败, rc=%d. 5秒后重试.\n", mqttClient.state());
+        P_PRINTF("[OneNET Task] ***错误*** MQTT连接失败, rc=%d. 5秒后重试.\n", mqttClient.state());
     }
 }
 
 void postProperties() {
-    // 检查传感器状态，如果正在初始化或未连接，则不上报
-    if (currentState.tempStatus == SS_INIT || currentState.tempStatus == SS_DISCONNECTED) {
-        P_PRINTLN("[OneNET] 传感器数据未就绪，跳过本次上报。");
-        return;
-    }
-    
-    // 创建JSON文档
-    DynamicJsonDocument doc(512);
-    
-    // 创建一个内嵌的 params 对象
-    JsonObject params = doc.createNestedObject("params");
-    
-    // 添加温湿度属性
-    params["Temperature"] = currentState.temperature;
-    params["Humidity"] = currentState.humidity;
-
-    // 添加气体浓度属性 (确保它们是有效数字)
-    if (!isnan(currentState.gasPpmValues.co)) {
-        params["CO"] = currentState.gasPpmValues.co;
-    }
-    if (!isnan(currentState.gasPpmValues.no2)) {
-        params["NO2"] = currentState.gasPpmValues.no2;
-    }
-    if (!isnan(currentState.gasPpmValues.c2h5oh)) {
-        params["C2H5OH"] = currentState.gasPpmValues.c2h5oh;
-    }
-    if (!isnan(currentState.gasPpmValues.voc)) {
-        params["VOC"] = currentState.gasPpmValues.voc;
-    }
-    
-    // 使用ArduinoJson构建完整的上报格式
+    if (currentState.tempStatus == SS_INIT || currentState.tempStatus == SS_DISCONNECTED) return;
     DynamicJsonDocument finalDoc(512);
     finalDoc["id"] = String(postMsgId++);
     finalDoc["version"] = "1.0";
-    // 嵌套 params 对象
-    finalDoc["params"] = params;
-
-    // 序列化为字符串
+    JsonObject params = finalDoc.createNestedObject("params");
+    params["temp_value"] = currentState.temperature;
+    params["humidity_value"] = currentState.humidity;
+    if (!isnan(currentState.gasPpmValues.co)) params["CO_ppm"] = currentState.gasPpmValues.co;
+    if (!isnan(currentState.gasPpmValues.no2)) params["NO2_ppm"] = currentState.gasPpmValues.no2;
+    if (!isnan(currentState.gasPpmValues.c2h5oh)) params["C2H5OH_ppm"] = currentState.gasPpmValues.c2h5oh;
+    if (!isnan(currentState.gasPpmValues.voc)) params["VOC_ppm"] = currentState.gasPpmValues.voc;
     String postData;
     serializeJson(finalDoc, postData);
-
-    P_PRINTLN("[OneNET] 准备上报数据:");
-    P_PRINTLN(postData);
-
-    // 发布消息
     if (mqttClient.publish(ONENET_TOPIC_PROPERTY_POST, postData.c_str())) {
         P_PRINTLN("[OneNET] 属性上报成功.");
     } else {
         P_PRINTLN("[OneNET] ***错误*** 属性上报失败!");
     }
+}
+
+void postTemperatureAlarm(SensorStatusVal status) {
+    if (!mqttClient.connected()) return;
+    DynamicJsonDocument doc(256);
+    doc["id"] = String(postEventId++);
+    doc["version"] = "1.0";
+    JsonObject params = doc.createNestedObject("params");
+    int alarmStatus = 0;
+    if (status == SS_WARNING) {
+        alarmStatus = (currentState.temperature > currentConfig.thresholds.tempMax) ? 1 : 2;
+    }
+    params["alarm_status"] = alarmStatus;
+    String postData;
+    serializeJson(doc, postData);
+    P_PRINTF("[OneNET] 上报温度报警事件: %s\n", postData.c_str());
+    mqttClient.publish(ONENET_TOPIC_EVENT_TEMP_ALARM_POST, postData.c_str());
+}
+
+void postHumidityAlarm(SensorStatusVal status) {
+    if (!mqttClient.connected()) return;
+    DynamicJsonDocument doc(256);
+    doc["id"] = String(postEventId++);
+    doc["version"] = "1.0";
+    JsonObject params = doc.createNestedObject("params");
+    int alarmStatus = 0;
+    if (status == SS_WARNING) {
+        alarmStatus = (currentState.humidity > currentConfig.thresholds.humMax) ? 1 : 2;
+    }
+    params["alarm_status"] = alarmStatus;
+    String postData;
+    serializeJson(doc, postData);
+    P_PRINTF("[OneNET] 上报湿度报警事件: %s\n", postData.c_str());
+    mqttClient.publish(ONENET_TOPIC_EVENT_HUM_ALARM_POST, postData.c_str());
+}
+
+void postGasAlarm(const char* gasType, float currentValue, float thresholdValue) {
+    if (!mqttClient.connected()) return;
+    DynamicJsonDocument doc(256);
+    doc["id"] = String(postEventId++);
+    doc["version"] = "1.0";
+    JsonObject params = doc.createNestedObject("params");
+    params["gas_type"] = gasType;
+    params["current_value"] = currentValue;
+    params["threshold_value"] = thresholdValue;
+    String postData;
+    serializeJson(doc, postData);
+    P_PRINTF("[OneNET] 上报气体报警事件: %s\n", postData.c_str());
+    mqttClient.publish(ONENET_TOPIC_EVENT_GAS_ALARM_POST, postData.c_str());
 }

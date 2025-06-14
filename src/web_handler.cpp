@@ -2,6 +2,7 @@
 #include "data_manager.h"
 #include "sensor_handler.h" 
 #include "config.h"
+#include "onenet_handler.h" 
 
 #include <WiFi.h>
 #include <ESPAsyncWebServer.h>
@@ -26,6 +27,10 @@ unsigned long lastNtpSyncTime = 0;
 
 // WebSocket action handlers map
 static std::map<String, WebSocketActionHandler> wsActionHandlers;
+static bool captivePortalDnsActive = false;
+
+// 新增: WebSocket任务句柄
+static TaskHandle_t webSocketTaskHandle = NULL;
 
 // ==========================================================================
 // == 函数声明 (内部使用) ==
@@ -37,14 +42,62 @@ void handleSaveLedBrightnessRequest(uint8_t clientNum, const JsonDocument& reque
 void handleScanWifiRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response);
 void handleConnectWifiRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response);
 void handleResetSettingsRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response);
-void handleStartCalibrationRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response); // 新增
+void handleStartCalibrationRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response);
 void startWifiScan(uint8_t clientNum, WifiState& wifiStatus, JsonDocument& responseDoc);
+
+// --->> BUG修复: 添加前向声明 <<---
+void processWiFiConnection(WifiState& wifiStatus, DeviceConfig& config);
+void processWifiScanResults(WifiState& wifiStatus);
+void attemptNtpSync();
+
+
+// ==========================================================================
+// == RTOS 任务实现 ==
+// ==========================================================================
+
+void initWebSocketTask() {
+    xTaskCreatePinnedToCore(
+        webSocketLoopTask,      // 任务函数
+        "WebSocketTask",        // 任务名称
+        4096,                   // 堆栈大小
+        NULL,                   // 任务参数
+        2,                      // 任务优先级
+        &webSocketTaskHandle,   // 任务句柄
+        1                       // 在核心1上运行
+    );
+    P_PRINTLN("[WS] WebSocket后台任务已创建并启动。");
+}
+
+void webSocketLoopTask(void* pvParameters) {
+    unsigned long lastBroadcastTime = 0;
+    for (;;) {
+        // 核心: 持续处理WebSocket事件
+        webSocket.loop();
+
+        // 周期性地广播数据给所有客户端
+        unsigned long currentTime = millis();
+        if (currentTime - lastBroadcastTime >= WEBSOCKET_UPDATE_INTERVAL_MS) {
+            lastBroadcastTime = currentTime;
+            // 仅在非连接/扫描/校准状态下广播，避免干扰
+            if ((wifiState.connectProgress == WIFI_CP_IDLE || wifiState.connectProgress == WIFI_CP_FAILED) && !wifiState.isScanning && currentState.calibrationState == CAL_IDLE) {
+                sendSensorDataToClients(currentState);
+                sendWifiStatusToClients(wifiState);
+            }
+        }
+        
+        // 短暂延时，让出CPU给其他任务
+        vTaskDelay(pdMS_TO_TICKS(10));
+    }
+}
+
 
 // ==========================================================================
 // == 函数实现 ==
 // ==========================================================================
 
 void initWiFiAndWebServer(DeviceConfig& config, WifiState& wifiStatus) {
+    stopOneNetMqttTask();
+
     WiFi.mode(WIFI_AP_STA);
     P_PRINTLN("[WIFI] 设置为AP+STA模式.");
     WiFi.softAP(WIFI_AP_SSID, WIFI_AP_PASSWORD, WIFI_AP_CHANNEL, 0, WIFI_AP_MAX_CONNECTIONS);
@@ -53,16 +106,18 @@ void initWiFiAndWebServer(DeviceConfig& config, WifiState& wifiStatus) {
 
     dnsServer.setErrorReplyCode(DNSReplyCode::NoError);
     dnsServer.start(53, "*", apIP);
+    captivePortalDnsActive = true; 
     P_PRINTLN("[DNS] Captive Portal DNS服务器已启动.");
 
     configureWebServer();
     server.begin();
     P_PRINTLN("[HTTP] HTTP服务器已启动");
 
+    // WebSocket服务器初始化
     setupWebSocketActions();
     webSocket.begin();
     webSocket.onEvent(onWebSocketEvent);
-    P_PRINTLN("[WS] WebSocket服务器已启动");
+    P_PRINTLN("[WS] WebSocket服务器已初始化.");
 
     if (config.currentSsidForSettings.length() > 0) {
         P_PRINTF("[WIFI] 检测到保存的SSID: %s, 尝试自动连接...\n", config.currentSsidForSettings.c_str());
@@ -89,19 +144,26 @@ void configureWebServer() {
     server.on("/chart.min.js", HTTP_GET, [](AsyncWebServerRequest *request){ request->send(SPIFFS, "/chart.min.js", "application/javascript"); });
     
     server.on("/generate_204", HTTP_GET, handleCaptivePortal);
-    server.on("/gen_204", HTTP_GET, handleCaptivePortal);
-    server.on("/hotspot-detect.html", HTTP_GET, handleCaptivePortal);
-    server.on("/fwlink", HTTP_GET, handleCaptivePortal);
-    server.on("/ncsi.txt", HTTP_GET, handleCaptivePortal);
-    server.on("/connecttest.txt", HTTP_GET, handleCaptivePortal);
-    server.on("/success.html", HTTP_GET, handleCaptivePortal);
-
     server.onNotFound(handleCaptivePortal);
 }
 
 void network_loop() {
-    dnsServer.processNextRequest();
-    webSocket.loop();
+    bool isConnected = (WiFi.status() == WL_CONNECTED);
+    if (isConnected && captivePortalDnsActive) {
+        dnsServer.stop();
+        captivePortalDnsActive = false;
+        P_PRINTLN("[WIFI] STA连接成功, Captive Portal DNS已停止.");
+    } else if (!isConnected && !captivePortalDnsActive) {
+        IPAddress apIP = WiFi.softAPIP();
+        dnsServer.start(53, "*", apIP);
+        captivePortalDnsActive = true;
+        P_PRINTLN("[WIFI] STA连接断开, Captive Portal DNS已重启.");
+    }
+    if (captivePortalDnsActive) {
+        dnsServer.processNextRequest();
+    }
+    
+    // 从主循环中移除了 webSocket.loop()
     processWiFiConnection(wifiState, currentConfig);
     processWifiScanResults(wifiState);
 
@@ -118,18 +180,14 @@ void network_loop() {
 }
 
 void attemptNtpSync() { 
-    if (!WiFi.isConnected()) {
-        P_PRINTLN("[NTP] WiFi未连接, 无法同步时间.");
-        return;
-    }
-
+    if (!WiFi.isConnected()) return;
     if (ntpInitialAttempts >= MAX_NTP_ATTEMPTS_AFTER_WIFI && !ntpSynced) {
-        P_PRINTLN("[NTP] 达到最大尝试次数, 同步失败. 将使用设备运行时间.");
+        P_PRINTLN("[NTP] 达到最大尝试次数, 同步失败.");
         ntpGiveUp = true;
         return;
     }
 
-    P_PRINTF("[NTP] 尝试同步时间 (尝试次数: %d/%d)...\n", ntpInitialAttempts + 1, MAX_NTP_ATTEMPTS_AFTER_WIFI);
+    P_PRINTF("[NTP] 尝试同步时间 (次数: %d/%d)...\n", ntpInitialAttempts + 1, MAX_NTP_ATTEMPTS_AFTER_WIFI);
     configTime(GMT_OFFSET_SEC, DAYLIGHT_OFFSET_SEC, NTP_SERVER1, NTP_SERVER2); 
     
     struct tm timeinfo;
@@ -148,11 +206,13 @@ void attemptNtpSync() {
 
 void handleCaptivePortal(AsyncWebServerRequest *request) {
     request->redirect("/");
-    P_PRINTF("[Portal] Captive portal重定向: %s\n", request->url().c_str());
 }
 
 void processWiFiConnection(WifiState& wifiStatus, DeviceConfig& config) {
     if (wifiStatus.connectProgress == WIFI_CP_IDLE || wifiStatus.connectProgress == WIFI_CP_FAILED) {
+        if (WiFi.status() != WL_CONNECTED && WiFi.getMode() == WIFI_AP_STA) {
+             stopOneNetMqttTask();
+        }
         return;
     }
     DynamicJsonDocument responseDoc(256);
@@ -160,7 +220,7 @@ void processWiFiConnection(WifiState& wifiStatus, DeviceConfig& config) {
     bool sendUpdateToClient = false;
     if (wifiStatus.connectProgress == WIFI_CP_DISCONNECTING) {
         if (WiFi.status() == WL_DISCONNECTED || millis() - wifiStatus.connectAttemptStartTime > 3000) { 
-            P_PRINTF("[WIFI_PROC] 已断开或超时(WIFI_CP_DISCONNECTING). 尝试连接到 %s\n", wifiStatus.ssidToTry.c_str());
+            P_PRINTF("[WIFI_PROC] 已断开. 尝试连接到 %s\n", wifiStatus.ssidToTry.c_str());
             WiFi.begin(wifiStatus.ssidToTry.c_str(), wifiStatus.passwordToTry.c_str());
             wifiStatus.connectProgress = WIFI_CP_CONNECTING;
             wifiStatus.connectAttemptStartTime = millis(); 
@@ -174,8 +234,11 @@ void processWiFiConnection(WifiState& wifiStatus, DeviceConfig& config) {
             config.currentPasswordForSettings = wifiStatus.passwordToTry;
             saveConfig(config); 
             P_PRINTF("[WIFI_PROC] 连接成功: SSID=%s, IP=%s\n", wifiStatus.ssidToTry.c_str(), WiFi.localIP().toString().c_str());
+            
+            startOneNetMqttTask();
+
             responseDoc["success"] = true;
-            responseDoc["message"] = "WiFi connected successfully to " + wifiStatus.ssidToTry;
+            responseDoc["message"] = "WiFi connected to " + wifiStatus.ssidToTry;
             responseDoc["ip"] = WiFi.localIP().toString();
             wifiStatus.connectProgress = WIFI_CP_IDLE;
             sendUpdateToClient = true;
@@ -183,23 +246,25 @@ void processWiFiConnection(WifiState& wifiStatus, DeviceConfig& config) {
             lastNtpAttemptTime = 0;
             ntpGiveUp = false;
         } else if (millis() - wifiStatus.connectAttemptStartTime > 20000) { 
-            P_PRINTF("[WIFI_PROC] 连接超时: SSID=%s. WiFi Status: %d\n", wifiStatus.ssidToTry.c_str(), status); 
+            P_PRINTF("[WIFI_PROC] 连接超时: SSID=%s.\n", wifiStatus.ssidToTry.c_str()); 
+            stopOneNetMqttTask();
             WiFi.disconnect(true); 
             responseDoc["success"] = false;
-            responseDoc["message"] = "Failed to connect to " + wifiStatus.ssidToTry + " (Timeout, Status: " + String(status) + ")";
+            responseDoc["message"] = "Failed to connect to " + wifiStatus.ssidToTry;
             wifiStatus.connectProgress = WIFI_CP_FAILED;
             sendUpdateToClient = true;
         } else if (status == WL_NO_SSID_AVAIL || status == WL_CONNECT_FAILED || status == WL_CONNECTION_LOST) { 
-            P_PRINTF("[WIFI_PROC] 连接失败: SSID=%s. WiFi Status: %d\n", wifiStatus.ssidToTry.c_str(), status);
-            WiFi.disconnect(true); 
+            P_PRINTF("[WIFI_PROC] 连接失败: SSID=%s.\n", wifiStatus.ssidToTry.c_str());
+            stopOneNetMqttTask();
+            WiFi.disconnect(true);
             responseDoc["success"] = false;
-            responseDoc["message"] = "Failed to connect to " + wifiStatus.ssidToTry + " (Error, Status: " + String(status) + ")";
+            responseDoc["message"] = "Failed to connect to " + wifiStatus.ssidToTry;
             wifiStatus.connectProgress = WIFI_CP_FAILED;
             sendUpdateToClient = true;
         }
         
         if (sendUpdateToClient) {
-            if (wifiStatus.connectInitiatorClientNum != 255 && wifiStatus.connectInitiatorClientNum < webSocket.connectedClients()) {
+            if (wifiStatus.connectInitiatorClientNum < webSocket.connectedClients()) {
                 String responseStr;
                 serializeJson(responseDoc, responseStr);
                 webSocket.sendTXT(wifiStatus.connectInitiatorClientNum, responseStr);
@@ -213,25 +278,21 @@ void processWiFiConnection(WifiState& wifiStatus, DeviceConfig& config) {
 
 void startWifiScan(uint8_t clientNum, WifiState& wifiStatus, JsonDocument& responseDoc) {
     if (wifiStatus.isScanning) {
-        P_PRINTLN("[WIFI_SCAN] WiFi扫描已在进行中.");
         responseDoc["type"] = "wifiScanResults";
         responseDoc["error"] = "Scan already in progress.";
-        responseDoc.createNestedArray("networks"); 
+        return; 
+    }
+    P_PRINTLN("[WIFI_SCAN] 请求异步扫描WiFi...");
+    if (WiFi.scanNetworks(true, true, false, 300, 0) == WIFI_SCAN_RUNNING) {
+        wifiStatus.isScanning = true;
+        wifiStatus.scanRequesterClientNum = clientNum;
+        wifiStatus.scanStartTime = millis();
+        responseDoc["type"] = "scanStatus";
+        responseDoc["message"] = "WiFi scan initiated...";
     } else {
-        P_PRINTLN("[WIFI_SCAN] 请求异步扫描WiFi...");
-        if (WiFi.scanNetworks(true, true, false, 300, 0) == WIFI_SCAN_RUNNING) {
-            wifiStatus.isScanning = true;
-            wifiStatus.scanRequesterClientNum = clientNum;
-            wifiStatus.scanStartTime = millis();
-            responseDoc["type"] = "scanStatus";
-            responseDoc["message"] = "WiFi scan initiated...";
-            P_PRINTLN("[WIFI_SCAN] 异步扫描已启动.");
-        } else {
-            P_PRINTLN("[WIFI_SCAN] 启动异步扫描失败.");
-            responseDoc["type"] = "wifiScanResults";
-            responseDoc["error"] = "Failed to start WiFi scan.";
-            responseDoc.createNestedArray("networks");
-        }
+        P_PRINTLN("[WIFI_SCAN] 启动异步扫描失败.");
+        responseDoc["type"] = "wifiScanResults";
+        responseDoc["error"] = "Failed to start WiFi scan.";
     }
 }
 
@@ -240,46 +301,41 @@ void processWifiScanResults(WifiState& wifiStatus) {
     if (!wifiStatus.isScanning) return;
     int8_t scanResult = WiFi.scanComplete();
     const unsigned long WIFI_SCAN_TIMEOUT_MS = 20000; 
+
     if (scanResult == WIFI_SCAN_RUNNING) {
         if (millis() - wifiStatus.scanStartTime > WIFI_SCAN_TIMEOUT_MS) {
             P_PRINTLN("[WIFI_SCAN_PROC] 扫描超时!");
-            WiFi.scanDelete();
-            wifiStatus.isScanning = false;
-            DynamicJsonDocument scanTimeoutDoc(128);
-            scanTimeoutDoc["type"] = "wifiScanResults";
-            scanTimeoutDoc["error"] = "Scan timed out.";
-            scanTimeoutDoc.createNestedArray("networks");
-            String timeoutStr;
-            serializeJson(scanTimeoutDoc, timeoutStr);
-            if (wifiStatus.scanRequesterClientNum != 255 && wifiStatus.scanRequesterClientNum < webSocket.connectedClients()) {
-                webSocket.sendTXT(wifiStatus.scanRequesterClientNum, timeoutStr);
-            }
-            wifiStatus.scanRequesterClientNum = 255;
+            scanResult = WIFI_SCAN_FAILED; // 强制设置为失败
+        } else {
+            return;
         }
-        return;
     }
-    P_PRINTF("[WIFI_SCAN_PROC] 异步扫描完成. 结果: %d\n", scanResult);
+
     wifiStatus.isScanning = false;
     DynamicJsonDocument doc(scanResult > 0 ? JSON_ARRAY_SIZE(scanResult) + scanResult * JSON_OBJECT_SIZE(3) + 256 : 256);
     doc["type"] = "wifiScanResults";
     JsonArray networks = doc.createNestedArray("networks");
+
     if (scanResult > 0) {
+        P_PRINTF("[WIFI_SCAN_PROC] 异步扫描完成, 发现 %d 个网络.\n", scanResult);
         for (int i = 0; i < scanResult; ++i) {
             JsonObject net = networks.createNestedObject();
             net["ssid"] = WiFi.SSID(i);
             net["rssi"] = WiFi.RSSI(i);
         }
     } else if (scanResult == WIFI_SCAN_FAILED) {
-         doc["error"] = "Scan failed.";
-         P_PRINTLN("[WIFI_SCAN_PROC] WiFi扫描失败.");
+         doc["error"] = "Scan failed or timed out.";
+         P_PRINTLN("[WIFI_SCAN_PROC] WiFi扫描失败或超时.");
     } else {
          P_PRINTLN("[WIFI_SCAN_PROC] 未发现WiFi网络.");
     }
-    String responseStr;
-    serializeJson(doc, responseStr);
-    if (wifiStatus.scanRequesterClientNum != 255 && wifiStatus.scanRequesterClientNum < webSocket.connectedClients()) {
+    
+    if (wifiStatus.scanRequesterClientNum < webSocket.connectedClients()) {
+        String responseStr;
+        serializeJson(doc, responseStr);
         webSocket.sendTXT(wifiStatus.scanRequesterClientNum, responseStr);
     }
+    
     WiFi.scanDelete();
     wifiStatus.scanRequesterClientNum = 255;
 }
@@ -288,10 +344,6 @@ void onWebSocketEvent(uint8_t clientNum, WStype_t type, uint8_t * payload, size_
     switch (type) {
         case WStype_DISCONNECTED:
             P_PRINTF("[%u] WebSocket已断开连接!\n", clientNum);
-            if (wifiState.isScanning && wifiState.scanRequesterClientNum == clientNum) {
-                P_PRINTLN("[WIFI_SCAN] 请求扫描的客户端已断开，取消扫描结果发送。");
-                wifiState.scanRequesterClientNum = 255; 
-            }
             break;
         case WStype_CONNECTED: {
             IPAddress ip = webSocket.remoteIP(clientNum);
@@ -333,7 +385,7 @@ void setupWebSocketActions() {
     wsActionHandlers["scanWifi"] = handleScanWifiRequest;
     wsActionHandlers["connectWifi"] = handleConnectWifiRequest;
     wsActionHandlers["resetSettings"] = handleResetSettingsRequest;
-    wsActionHandlers["startCalibration"] = handleStartCalibrationRequest; // 新增
+    wsActionHandlers["startCalibration"] = handleStartCalibrationRequest; 
 }
 
 void handleWebSocketMessage(uint8_t clientNum, const JsonDocument& doc, JsonDocument& responseDoc) {
@@ -344,26 +396,20 @@ void handleWebSocketMessage(uint8_t clientNum, const JsonDocument& doc, JsonDocu
         responseDoc["message"] = "Missing 'action' field.";
         return;
     }
-    P_PRINTF("[%u] WS action: %s\n", clientNum, action);
     String actionStr = String(action);
     auto it = wsActionHandlers.find(actionStr);
     if (it != wsActionHandlers.end()) {
         it->second(clientNum, doc, responseDoc);
     } else {
-        P_PRINTF("[%u] 未知WS action: %s\n", clientNum, action);
         responseDoc["type"] = "error";
         responseDoc["message"] = "Unknown action: " + actionStr;
     }
 }
 
 // WebSocket action handlers
-void handleGetCurrentSettingsRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) {
-    sendCurrentSettingsToClient(clientNum, currentConfig);
-}
-void handleGetHistoricalDataRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) {
-    sendHistoricalDataToClient(clientNum, historicalData);
-}
-void handleSaveThresholdsRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) {
+void handleGetCurrentSettingsRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) { sendCurrentSettingsToClient(clientNum, currentConfig); }
+void handleGetHistoricalDataRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) { sendHistoricalDataToClient(clientNum, historicalData); }
+void handleSaveThresholdsRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) { 
     currentConfig.thresholds.tempMin = request["tempMin"] | currentConfig.thresholds.tempMin;
     currentConfig.thresholds.tempMax = request["tempMax"] | currentConfig.thresholds.tempMax;
     currentConfig.thresholds.humMin  = request["humMin"]  | currentConfig.thresholds.humMin;
@@ -377,7 +423,7 @@ void handleSaveThresholdsRequest(uint8_t clientNum, const JsonDocument& request,
     response["type"] = "saveSettingsStatus";
     response["success"] = true;
     response["message"] = "Thresholds saved.";
-}
+ }
 void handleSaveLedBrightnessRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) {
     if (request.containsKey("brightness") && request["brightness"].is<int>()) {
         int brightness = request["brightness"].as<int>();
@@ -387,45 +433,40 @@ void handleSaveLedBrightnessRequest(uint8_t clientNum, const JsonDocument& reque
             saveConfig(currentConfig);
             response["type"] = "saveBrightnessStatus";
             response["success"] = true;
-            response["message"] = "LED brightness saved and applied.";
+            response["message"] = "LED brightness saved.";
         } else {
             response["type"] = "saveBrightnessStatus";
             response["success"] = false;
-            response["message"] = "Invalid brightness value (must be 0-100).";
+            response["message"] = "Invalid brightness value.";
         }
     }
 }
-void handleScanWifiRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) {
-    startWifiScan(clientNum, wifiState, response);
-}
+void handleScanWifiRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) { startWifiScan(clientNum, wifiState, response); }
 void handleConnectWifiRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) {
     if (wifiState.connectProgress != WIFI_CP_IDLE && wifiState.connectProgress != WIFI_CP_FAILED) {
-        P_PRINTLN("[WIFI_CONN] WiFi连接已在进行中.");
         response["type"] = "connectWifiStatus";
         response["success"] = false;
-        response["message"] = "Connection attempt already in progress.";
+        response["message"] = "Connection attempt in progress.";
     } else {
         wifiState.ssidToTry = request["ssid"].as<String>();
         wifiState.passwordToTry = request["password"].as<String>();
-        P_PRINTF("[WIFI_CONN] 收到连接请求: SSID=%s\n", wifiState.ssidToTry.c_str());
         if (wifiState.ssidToTry.length() == 0) {
             response["type"] = "connectWifiStatus";
             response["success"] = false;
             response["message"] = "SSID cannot be empty.";
         } else {
+            stopOneNetMqttTask();
             wifiState.connectInitiatorClientNum = clientNum;
             wifiState.connectProgress = WIFI_CP_DISCONNECTING; 
             wifiState.connectAttemptStartTime = millis();
             WiFi.disconnect(true); 
             response["type"] = "connectWifiStatus"; 
             response["success"] = false; 
-            response["message"] = "Initiating connection to " + wifiState.ssidToTry + "...";
+            response["message"] = "Initiating connection...";
         }
     }
 }
-
-void handleResetSettingsRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) {
-    P_PRINTLN("[RESET] 收到恢复出厂设置请求.");
+void handleResetSettingsRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) { 
     resetAllSettingsToDefault(currentConfig);
     saveConfig(currentConfig);
     historicalData.clear();
@@ -436,20 +477,12 @@ void handleResetSettingsRequest(uint8_t clientNum, const JsonDocument& request, 
     String respStr;
     serializeJson(response, respStr);
     webSocket.sendTXT(clientNum, respStr);
-    P_PRINTLN("[RESET] 设置已重置, 准备重启...");
     delay(1000);
     ESP.restart();
 }
+void handleStartCalibrationRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) { startCalibration(); response["type"] = "calibrationStatus"; response["success"] = true; response["message"] = "Calibration initiated."; }
 
-// 新增: 处理校准请求
-void handleStartCalibrationRequest(uint8_t clientNum, const JsonDocument& request, JsonDocument& response) {
-    P_PRINTLN("[WS] 收到启动校准请求.");
-    startCalibration(); // 调用 sensor_handler 中的函数
-    response["type"] = "calibrationStatus";
-    response["success"] = true;
-    response["message"] = "Calibration process initiated.";
-}
-
+// --- Data Sending Functions ---
 void sendSensorDataToClients(const DeviceState& state, uint8_t specificClientNum) {
     DynamicJsonDocument doc(1024); 
     doc["type"] = "sensorData";
@@ -481,10 +514,9 @@ void sendSensorDataToClients(const DeviceState& state, uint8_t specificClientNum
     doc["timeStr"] = timeStr;
     String jsonString;
     serializeJson(doc, jsonString);
-    if (specificClientNum != 255 && specificClientNum < webSocket.connectedClients()) webSocket.sendTXT(specificClientNum, jsonString);
+    if (specificClientNum != 255) webSocket.sendTXT(specificClientNum, jsonString);
     else webSocket.broadcastTXT(jsonString);
 }
-
 void sendWifiStatusToClients(const WifiState& currentWifiState, uint8_t specificClientNum) {
     DynamicJsonDocument doc(512);
     doc["type"] = "wifiStatus";
@@ -501,14 +533,12 @@ void sendWifiStatusToClients(const WifiState& currentWifiState, uint8_t specific
     doc["ntp_synced"] = ntpSynced;
     String jsonString;
     serializeJson(doc, jsonString);
-    if (specificClientNum != 255 && specificClientNum < webSocket.connectedClients()) webSocket.sendTXT(specificClientNum, jsonString);
+    if (specificClientNum != 255) webSocket.sendTXT(specificClientNum, jsonString);
     else webSocket.broadcastTXT(jsonString);
 }
-
 void sendHistoricalDataToClient(uint8_t clientNum, const CircularBuffer& histBuffer) {
     if (clientNum >= webSocket.connectedClients()) return;
     const std::vector<SensorDataPoint>& dataToSend = histBuffer.getData();
-    P_PRINTF("[HISTORY] 发送历史数据给客户端 %u (%u 条)\n", clientNum, dataToSend.size());
     DynamicJsonDocument doc(min((size_t)(1024 * 16), (size_t)(JSON_ARRAY_SIZE(dataToSend.size()) + dataToSend.size() * JSON_OBJECT_SIZE(8)))); 
     doc["type"] = "historicalData";
     JsonArray historyArr = doc.createNestedArray("history");
@@ -527,19 +557,10 @@ void sendHistoricalDataToClient(uint8_t clientNum, const CircularBuffer& histBuf
     String jsonString;
     if (serializeJson(doc, jsonString) > 0) {
         webSocket.sendTXT(clientNum, jsonString);
-    } else {
-        P_PRINTLN("[HISTORY] 序列化历史数据失败 (可能JSON过大).");
-        DynamicJsonDocument errDoc(128); 
-        errDoc["type"] = "historicalData"; 
-        errDoc["error"] = "Failed to serialize history (too large).";
-        errDoc.createNestedArray("history");
-        String errStr; serializeJson(errDoc, errStr); webSocket.sendTXT(clientNum, errStr);
     }
 }
-
 void sendCurrentSettingsToClient(uint8_t clientNum, const DeviceConfig& config) {
     if (clientNum >= webSocket.connectedClients()) return;
-    P_PRINTF("[SETTINGS] 发送当前设置给客户端 %u\n", clientNum);
     DynamicJsonDocument doc(2048); 
     doc["type"] = "settingsData";
     JsonObject settingsObj = doc.createNestedObject("settings");
@@ -553,7 +574,6 @@ void sendCurrentSettingsToClient(uint8_t clientNum, const DeviceConfig& config) 
     thresholdsObj["c2h5ohPpmMax"] = config.thresholds.c2h5ohPpmMax; 
     thresholdsObj["vocPpmMax"] = config.thresholds.vocPpmMax;
 
-    // 新增: 发送R0值
     JsonObject r0Obj = settingsObj.createNestedObject("r0Values");
     r0Obj["co"] = config.r0Values.co;
     r0Obj["no2"] = config.r0Values.no2;
@@ -566,14 +586,12 @@ void sendCurrentSettingsToClient(uint8_t clientNum, const DeviceConfig& config) 
     serializeJson(doc, jsonString);
     webSocket.sendTXT(clientNum, jsonString);
 }
-
-// 新增: 发送校准状态
 void sendCalibrationStatusToClients(uint8_t specificClientNum) {
     DynamicJsonDocument doc(1024);
     doc["type"] = "calibrationStatusUpdate";
 
     JsonObject calStatus = doc.createNestedObject("calibration");
-    calStatus["state"] = currentState.calibrationState; // 0: IDLE, 1: IN_PROGRESS, 2: COMPLETED, 3: FAILED
+    calStatus["state"] = currentState.calibrationState; 
     calStatus["progress"] = currentState.calibrationProgress;
 
     JsonObject currentR0 = calStatus.createNestedObject("currentR0");
@@ -590,10 +608,6 @@ void sendCalibrationStatusToClients(uint8_t specificClientNum) {
 
     String jsonString;
     serializeJson(doc, jsonString);
-
-    if (specificClientNum != 255 && specificClientNum < webSocket.connectedClients()) {
-        webSocket.sendTXT(specificClientNum, jsonString);
-    } else {
-        webSocket.broadcastTXT(jsonString);
-    }
+    if (specificClientNum != 255) webSocket.sendTXT(specificClientNum, jsonString);
+    else webSocket.broadcastTXT(jsonString);
 }
