@@ -35,10 +35,12 @@ struct GasResistData {
 
 // 设备当前状态
 struct DeviceState {
+    // 【修改】: 根据平台错误和您的要求，将温度类型改回 int
     int temperature;
-    int humidity;
+    float humidity;
+
     GasPpmData gasPpmValues;
-    GasResistData gasRsValues; // 新增: 用于存储当前测量的Rs值
+    GasResistData gasRsValues; 
     SensorStatusVal tempStatus, humStatus, gasCoStatus, gasNo2Status, gasC2h5ohStatus, gasVocStatus;
     bool buzzerShouldBeActive;
     unsigned long buzzerStopTime;
@@ -46,7 +48,6 @@ struct DeviceState {
     bool ledBlinkState;
     unsigned long lastBlinkTime;
     
-    // 新增: 校准相关状态
     CalibrationState calibrationState;
     int calibrationProgress;      // 校准进度 (0-100)
     GasResistData measuredR0;     // 校准过程中测量的R0值
@@ -64,7 +65,7 @@ struct AlarmThresholds {
 // 设备配置 (从SPIFFS加载/保存)
 struct DeviceConfig {
     AlarmThresholds thresholds;
-    GasResistData r0Values; // 新增: 用于存储校准后的R0值
+    GasResistData r0Values; 
     String currentSsidForSettings;
     String currentPasswordForSettings;
     uint8_t ledBrightness;
@@ -91,9 +92,11 @@ struct WifiState {
 struct SensorDataPoint {
     unsigned long timestamp;
     bool isTimeRelative;
-    int temp, hum;
-    GasPpmData gas; // 类型从 GasData 更改为 GasPpmData
-    char timeStr[12]; // 用于存储格式化后的时间字符串
+    // 【修改】: 同样更新历史数据点中的温湿度类型
+    int temp;
+    int hum;
+    GasPpmData gas;
+    char timeStr[12]; 
 };
 
 // 环形缓冲区类声明
@@ -108,7 +111,7 @@ public:
 
 private:
     std::vector<SensorDataPoint> buffer;
-    mutable std::vector<SensorDataPoint> orderedData; // 用于返回有序数据，避免重复分配
+    mutable std::vector<SensorDataPoint> orderedData; 
     size_t maxSize, head, tail;
     bool full;
 };
@@ -124,7 +127,6 @@ extern CircularBuffer historicalData;
 extern unsigned long lastSensorReadTime, lastWebSocketUpdateTime, lastHistoricalDataSaveTime;
 extern unsigned long gasSensorWarmupEndTime;
 
-// 新增: FreeRTOS 任务句柄和信号量，用于控制校准流程
 extern TaskHandle_t calibrationTaskHandle;
 extern SemaphoreHandle_t calibrationSemaphore;
 

@@ -101,8 +101,9 @@ void readSensors(DeviceState& state, const DeviceConfig& config) {
         state.tempStatus = SS_DISCONNECTED;
         state.humStatus = SS_DISCONNECTED;
     } else {
+        // 【修改】: 将温度四舍五入为整数，湿度保持float（将在onenet_handler中转换为int）
         state.temperature = round(newTemp);
-        state.humidity = round(newHum);
+        state.humidity = newHum;
         if(state.tempStatus == SS_INIT || state.tempStatus == SS_DISCONNECTED) state.tempStatus = SS_NORMAL;
         if(state.humStatus == SS_INIT || state.humStatus == SS_DISCONNECTED) state.humStatus = SS_NORMAL;
     }
@@ -180,6 +181,7 @@ void checkAlarms(DeviceState& state, const DeviceConfig& config) {
     bool anyAlarm = false;
     if (state.tempStatus == SS_NORMAL) {
         if (state.temperature < config.thresholds.tempMin || state.temperature > config.thresholds.tempMax) {
+            // 【修改】: 将温度报警的打印格式改回 %d
             P_PRINTF("[ALARM] 温度超限! %d°C (范围: %d-%d)\n", state.temperature, config.thresholds.tempMin, config.thresholds.tempMax);
             state.tempStatus = SS_WARNING;
         }
@@ -190,7 +192,8 @@ void checkAlarms(DeviceState& state, const DeviceConfig& config) {
     }
     if (state.humStatus == SS_NORMAL) {
         if (state.humidity < config.thresholds.humMin || state.humidity > config.thresholds.humMax) {
-            P_PRINTF("[ALARM] 湿度超限! %d%% (范围: %d-%d)\n", state.humidity, config.thresholds.humMin, config.thresholds.humMax);
+             // 【修改】: 将湿度报警的打印格式改回 %d
+            P_PRINTF("[ALARM] 湿度超限! %d%% (范围: %d-%d)\n", (int)state.humidity, config.thresholds.humMin, config.thresholds.humMax);
             state.humStatus = SS_WARNING;
         }
     } else if (state.humStatus == SS_WARNING) {
@@ -255,7 +258,7 @@ void updateLedStatus(const DeviceState& state, const WifiState& wifiStatus) {
     
     DeviceState& mutableState = const_cast<DeviceState&>(state); 
 
-    const unsigned long UNIFIED_BLINK_INTERVAL = 500; // 统一闪烁频率为500ms
+    const unsigned long UNIFIED_BLINK_INTERVAL = 500;
     
     if (state.calibrationState == CAL_IN_PROGRESS) {
         if (currentTime - mutableState.lastBlinkTime >= UNIFIED_BLINK_INTERVAL) { 
