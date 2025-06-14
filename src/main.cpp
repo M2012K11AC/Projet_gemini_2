@@ -8,13 +8,14 @@
 #include "data_manager.h"
 #include "sensor_handler.h"
 #include "web_handler.h"
+#include "onenet_handler.h" // <-- 1. 包含新的OneNET头文件
 
 // ==========================================================================
 // == Arduino `setup()` 函数 ==
 // ==========================================================================
 void setup() {
     Serial.begin(115200);
-    P_PRINTLN("\n[SETUP] 系统启动中 (V5 - 校准功能)...");
+    P_PRINTLN("\n[SETUP] 系统启动中...");
 
     // 初始化硬件
     initHardware();
@@ -52,6 +53,9 @@ void setup() {
     } else {
         P_PRINTLN("[SETUP] ***错误*** 校准信号量创建失败！");
     }
+
+    // <-- 2. 初始化并启动OneNET MQTT任务 -->
+    initOneNetMqttTask();
     
     P_PRINTLN("[SETUP] 初始化完成, 系统运行中.");
 }
