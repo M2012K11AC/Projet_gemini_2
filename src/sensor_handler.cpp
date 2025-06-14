@@ -1,8 +1,8 @@
 #include "sensor_handler.h"
 #include "config.h"
 #include "data_manager.h"
-#include "web_handler.h" 
-#include "onenet_handler.h"
+#include "web_handler.h" // 包含 web_handler.h 以便发送WebSocket消息
+#include <WiFi.h>
 
 #include <DHT.h>
 #include <Wire.h>
@@ -16,8 +16,10 @@ static DHT dht(DHT_PIN, DHT_TYPE);
 static GAS_GMXXX<TwoWire> gas_sensor;
 static Adafruit_NeoPixel pixels(NEOPIXEL_NUM, NEOPIXEL_PIN, NEO_GRB + NEO_KHZ800);
 
+// 颜色定义 (在initHardware中初始化)
 static uint32_t COLOR_GREEN_VAL, COLOR_RED_VAL, COLOR_BLUE_VAL, COLOR_YELLOW_VAL, COLOR_ORANGE_VAL, COLOR_OFF_VAL, COLOR_CYAN_VAL;
 
+// 传感器负载电阻 (RL)，单位 kOhm
 const float RL_VALUE_KOHM = 10.0;
 
 // ==========================================================================
@@ -36,6 +38,7 @@ void initHardware() {
     pixels.show();
     P_PRINTLN("[HW] NeoPixel RGB LED已初始化.");
 
+    // 初始化颜色常量
     COLOR_GREEN_VAL  = pixels.Color(0, 120, 0);
     COLOR_RED_VAL    = pixels.Color(120, 0, 0);
     COLOR_BLUE_VAL   = pixels.Color(0, 0, 120);
@@ -44,6 +47,7 @@ void initHardware() {
     COLOR_CYAN_VAL   = pixels.Color(0, 255, 255);
     COLOR_OFF_VAL    = pixels.Color(0, 0, 0);
 
+    // 初始状态灯为蓝色，表示正在启动
     pixels.setPixelColor(0, COLOR_BLUE_VAL);
     pixels.show();
 
@@ -174,64 +178,51 @@ void calculatePpm(DeviceState& state, const DeviceConfig& config) {
 
 void checkAlarms(DeviceState& state, const DeviceConfig& config) {
     bool anyAlarm = false;
-    SensorStatusVal oldStatus;
-
-    oldStatus = state.tempStatus;
-    if (oldStatus != SS_INIT && oldStatus != SS_DISCONNECTED) {
+    if (state.tempStatus == SS_NORMAL) {
         if (state.temperature < config.thresholds.tempMin || state.temperature > config.thresholds.tempMax) {
+            P_PRINTF("[ALARM] 温度超限! %d°C (范围: %d-%d)\n", state.temperature, config.thresholds.tempMin, config.thresholds.tempMax);
             state.tempStatus = SS_WARNING;
-            if (oldStatus == SS_NORMAL) { 
-                P_PRINTF("[ALARM] 温度超限! %d°C (范围: %d-%d)\n", state.temperature, config.thresholds.tempMin, config.thresholds.tempMax);
-                postTemperatureAlarm(SS_WARNING);
-            }
-        } else {
-            state.tempStatus = SS_NORMAL;
-            if (oldStatus == SS_WARNING) { 
-                 P_PRINTLN("[ALARM] 温度恢复正常.");
-                 postTemperatureAlarm(SS_NORMAL);
-            }
         }
+    } else if (state.tempStatus == SS_WARNING) {
+        if (state.temperature >= config.thresholds.tempMin && state.temperature <= config.thresholds.tempMax) {
+           state.tempStatus = SS_NORMAL;
+        }
+    }
+    if (state.humStatus == SS_NORMAL) {
+        if (state.humidity < config.thresholds.humMin || state.humidity > config.thresholds.humMax) {
+            P_PRINTF("[ALARM] 湿度超限! %d%% (范围: %d-%d)\n", state.humidity, config.thresholds.humMin, config.thresholds.humMax);
+            state.humStatus = SS_WARNING;
+        }
+    } else if (state.humStatus == SS_WARNING) {
+        if (state.humidity >= config.thresholds.humMin && state.humidity <= config.thresholds.humMax) {
+            state.humStatus = SS_NORMAL; 
+        }
+    }
+    if (state.gasCoStatus == SS_NORMAL && state.gasPpmValues.co > config.thresholds.coPpmMax) {
+        P_PRINTF("[ALARM] CO超限! %.2f PPM (阈值: >%.2f)\n", state.gasPpmValues.co, config.thresholds.coPpmMax);
+        state.gasCoStatus = SS_WARNING;
+    } else if (state.gasCoStatus == SS_WARNING && state.gasPpmValues.co <= config.thresholds.coPpmMax) {
+        state.gasCoStatus = SS_NORMAL;
+    }
+    if (state.gasNo2Status == SS_NORMAL && state.gasPpmValues.no2 > config.thresholds.no2PpmMax) {
+        P_PRINTF("[ALARM] NO2超限! %.2f PPM (阈值: >%.2f)\n", state.gasPpmValues.no2, config.thresholds.no2PpmMax);
+        state.gasNo2Status = SS_WARNING;
+    } else if (state.gasNo2Status == SS_WARNING && state.gasPpmValues.no2 <= config.thresholds.no2PpmMax) {
+        state.gasNo2Status = SS_NORMAL;
+    }
+    if (state.gasC2h5ohStatus == SS_NORMAL && state.gasPpmValues.c2h5oh > config.thresholds.c2h5ohPpmMax) {
+        P_PRINTF("[ALARM] C2H5OH超限! %.2f PPM (阈值: >%.2f)\n", state.gasPpmValues.c2h5oh, config.thresholds.c2h5ohPpmMax);
+        state.gasC2h5ohStatus = SS_WARNING;
+    } else if (state.gasC2h5ohStatus == SS_WARNING && state.gasPpmValues.c2h5oh <= config.thresholds.c2h5ohPpmMax) {
+        state.gasC2h5ohStatus = SS_NORMAL;
+    }
+    if (state.gasVocStatus == SS_NORMAL && state.gasPpmValues.voc > config.thresholds.vocPpmMax) {
+        P_PRINTF("[ALARM] VOC超限! %.2f PPM (阈值: >%.2f)\n", state.gasPpmValues.voc, config.thresholds.vocPpmMax);
+        state.gasVocStatus = SS_WARNING;
+    } else if (state.gasVocStatus == SS_WARNING && state.gasPpmValues.voc <= config.thresholds.vocPpmMax) {
+        state.gasVocStatus = SS_NORMAL;
     }
     
-    oldStatus = state.humStatus;
-    if(oldStatus != SS_INIT && oldStatus != SS_DISCONNECTED) {
-        if (state.humidity < config.thresholds.humMin || state.humidity > config.thresholds.humMax) {
-            state.humStatus = SS_WARNING;
-            if (oldStatus == SS_NORMAL) {
-                P_PRINTF("[ALARM] 湿度超限! %d%% (范围: %d-%d)\n", state.humidity, config.thresholds.humMin, config.thresholds.humMax);
-                postHumidityAlarm(SS_WARNING);
-            }
-        } else {
-            state.humStatus = SS_NORMAL;
-            if (oldStatus == SS_WARNING) {
-                P_PRINTLN("[ALARM] 湿度恢复正常.");
-                postHumidityAlarm(SS_NORMAL);
-            }
-        }
-    }
-
-    #define CHECK_GAS_ALARM(gasName, gasPpm, gasStatus, threshold) \
-        oldStatus = gasStatus; \
-        if(oldStatus != SS_INIT && oldStatus != SS_DISCONNECTED && !isnan(gasPpm)) { \
-            if (gasPpm > threshold) { \
-                gasStatus = SS_WARNING; \
-                if (oldStatus == SS_NORMAL) { \
-                    P_PRINTF("[ALARM] %s超限! %.2f PPM (阈值: >%.2f)\n", gasName, gasPpm, threshold); \
-                    postGasAlarm(gasName, gasPpm, threshold); \
-                } \
-            } else { \
-                gasStatus = SS_NORMAL; \
-                if (oldStatus == SS_WARNING) { \
-                    P_PRINTF("[ALARM] %s恢复正常.\n", gasName); \
-                } \
-            } \
-        }
-
-    CHECK_GAS_ALARM("CO", state.gasPpmValues.co, state.gasCoStatus, config.thresholds.coPpmMax);
-    CHECK_GAS_ALARM("NO2", state.gasPpmValues.no2, state.gasNo2Status, config.thresholds.no2PpmMax);
-    CHECK_GAS_ALARM("C2H5OH", state.gasPpmValues.c2h5oh, state.gasC2h5ohStatus, config.thresholds.c2h5ohPpmMax);
-    CHECK_GAS_ALARM("VOC", state.gasPpmValues.voc, state.gasVocStatus, config.thresholds.vocPpmMax);
-
     anyAlarm = (state.tempStatus == SS_WARNING || state.humStatus == SS_WARNING || state.gasCoStatus == SS_WARNING || state.gasNo2Status == SS_WARNING || state.gasC2h5ohStatus == SS_WARNING || state.gasVocStatus == SS_WARNING);
 
     if (anyAlarm) {
@@ -264,7 +255,7 @@ void updateLedStatus(const DeviceState& state, const WifiState& wifiStatus) {
     
     DeviceState& mutableState = const_cast<DeviceState&>(state); 
 
-    const unsigned long UNIFIED_BLINK_INTERVAL = 500;
+    const unsigned long UNIFIED_BLINK_INTERVAL = 500; // 统一闪烁频率为500ms
     
     if (state.calibrationState == CAL_IN_PROGRESS) {
         if (currentTime - mutableState.lastBlinkTime >= UNIFIED_BLINK_INTERVAL) { 
@@ -330,104 +321,83 @@ void controlBuzzer(DeviceState& state) {
     }
 }
 
-// ============== 修改: 按需创建和自删除任务的逻辑 ==============
-
 void startCalibration() {
-    // 检查任务是否已在运行，防止重复创建
-    if (calibrationTaskHandle != NULL) {
-        P_PRINTLN("[CAL] 校准任务已在运行中, 请勿重复启动.");
+    if (currentState.calibrationState == CAL_IN_PROGRESS) {
+        P_PRINTLN("[CAL] 校准已在进行中。");
         return;
     }
-
-    P_PRINTLN("[CAL] 收到校准请求, 正在创建校准任务...");
-    xTaskCreatePinnedToCore(
-        calibrationTask,          // 任务函数
-        "CalibrationTask",        // 任务名称
-        4096,                     // 堆栈大小 (Bytes)
-        NULL,                     // 任务输入参数
-        2,                        // 任务优先级 (可以适当提高以保证响应)
-        &calibrationTaskHandle,   // 任务句柄
-        0                         // 在核心0上运行
-    );
+    P_PRINTLN("[CAL] 收到校准请求，释放信号量以启动任务...");
+    xSemaphoreGive(calibrationSemaphore);
 }
 
 void calibrationTask(void *pvParameters) {
-    P_PRINTLN("[CAL_TASK] 校准任务已启动...");
-    
-    // 发送信号量，表示任务已经接收到请求并开始执行 (虽然现在是直接创建，保留此逻辑也无妨)
-    xSemaphoreGive(calibrationSemaphore);
-
-    currentState.calibrationState = CAL_IN_PROGRESS;
-    currentState.calibrationProgress = 0;
-    sendCalibrationStatusToClients();
-
-    if (millis() < gasSensorWarmupEndTime) {
-         P_PRINTLN("[CAL_TASK] 等待传感器预热完成...");
-         while (millis() < gasSensorWarmupEndTime) {
-            currentState.calibrationProgress = (int)((float)millis() / gasSensorWarmupEndTime * 20.0f);
+    for (;;) {
+        if (xSemaphoreTake(calibrationSemaphore, portMAX_DELAY) == pdTRUE) {
+            P_PRINTLN("[CAL_TASK] 开始校准流程...");
+            
+            currentState.calibrationState = CAL_IN_PROGRESS;
+            currentState.calibrationProgress = 0;
             sendCalibrationStatusToClients();
-            vTaskDelay(pdMS_TO_TICKS(500));
-         }
+
+            if (millis() < gasSensorWarmupEndTime) {
+                 P_PRINTLN("[CAL_TASK] 等待传感器预热完成...");
+                 while (millis() < gasSensorWarmupEndTime) {
+                    currentState.calibrationProgress = (int)((float)millis() / gasSensorWarmupEndTime * 20.0f);
+                    sendCalibrationStatusToClients();
+                    vTaskDelay(pdMS_TO_TICKS(500));
+                 }
+            }
+            
+            GasResistData r0_sum = {0.0, 0.0, 0.0, 0.0};
+            int valid_samples[4] = {0, 0, 0, 0};
+
+            P_PRINTLN("[CAL_TASK] 开始采集数据...");
+            for (int i = 0; i < CALIBRATION_SAMPLE_COUNT; i++) {
+                float current_rs_co = adcToRs(gas_sensor.getGM702B());
+                float current_rs_no2 = adcToRs(gas_sensor.getGM102B());
+                float current_rs_c2h5oh = adcToRs(gas_sensor.getGM302B());
+                float current_rs_voc = adcToRs(gas_sensor.getGM502B());
+
+                if (current_rs_co > 0) { r0_sum.co += current_rs_co; valid_samples[0]++; }
+                if (current_rs_no2 > 0) { r0_sum.no2 += current_rs_no2; valid_samples[1]++; }
+                if (current_rs_c2h5oh > 0) { r0_sum.c2h5oh += current_rs_c2h5oh; valid_samples[2]++; }
+                if (current_rs_voc > 0) { r0_sum.voc += current_rs_voc; valid_samples[3]++; }
+
+                currentState.calibrationProgress = 20 + (int)((float)(i + 1) / CALIBRATION_SAMPLE_COUNT * 80.0f);
+                currentState.measuredR0.co = (valid_samples[0] > 0) ? (r0_sum.co / valid_samples[0]) : NAN;
+                currentState.measuredR0.no2 = (valid_samples[1] > 0) ? (r0_sum.no2 / valid_samples[1]) : NAN;
+                currentState.measuredR0.c2h5oh = (valid_samples[2] > 0) ? (r0_sum.c2h5oh / valid_samples[2]) : NAN;
+                currentState.measuredR0.voc = (valid_samples[3] > 0) ? (r0_sum.voc / valid_samples[3]) : NAN;
+                
+                sendCalibrationStatusToClients();
+                vTaskDelay(pdMS_TO_TICKS(CALIBRATION_SAMPLE_INTERVAL_MS));
+            }
+
+            P_PRINTLN("[CAL_TASK] 数据采集完成，正在计算并保存...");
+
+            bool success = false;
+            if (valid_samples[0] > 0) { currentConfig.r0Values.co = r0_sum.co / valid_samples[0]; success = true; }
+            if (valid_samples[1] > 0) { currentConfig.r0Values.no2 = r0_sum.no2 / valid_samples[1]; success = true; }
+            if (valid_samples[2] > 0) { currentConfig.r0Values.c2h5oh = r0_sum.c2h5oh / valid_samples[2]; success = true; }
+            if (valid_samples[3] > 0) { currentConfig.r0Values.voc = r0_sum.voc / valid_samples[3]; success = true; }
+
+            if (success) {
+                saveConfig(currentConfig);
+                currentState.calibrationState = CAL_COMPLETED;
+                P_PRINTLN("[CAL_TASK] 校准成功并已保存。");
+                P_PRINTF("  新R0值 - CO: %.2f, NO2: %.2f, C2H5OH: %.2f, VOC: %.2f\n",
+                   currentConfig.r0Values.co, currentConfig.r0Values.no2,
+                   currentConfig.r0Values.c2h5oh, currentConfig.r0Values.voc);
+            } else {
+                currentState.calibrationState = CAL_FAILED;
+                P_PRINTLN("[CAL_TASK] 校准失败，没有有效的采样数据。");
+            }
+            
+            sendCalibrationStatusToClients(); 
+            
+            P_PRINTLN("[CAL_TASK] 3秒后设备将重启以应用新校准值...");
+            vTaskDelay(pdMS_TO_TICKS(3000));
+            ESP.restart();
+        }
     }
-    
-    GasResistData r0_sum = {0.0, 0.0, 0.0, 0.0};
-    int valid_samples[4] = {0, 0, 0, 0};
-
-    P_PRINTLN("[CAL_TASK] 开始采集数据...");
-    for (int i = 0; i < CALIBRATION_SAMPLE_COUNT; i++) {
-        float current_rs_co = adcToRs(gas_sensor.getGM702B());
-        float current_rs_no2 = adcToRs(gas_sensor.getGM102B());
-        float current_rs_c2h5oh = adcToRs(gas_sensor.getGM302B());
-        float current_rs_voc = adcToRs(gas_sensor.getGM502B());
-
-        if (current_rs_co > 0) { r0_sum.co += current_rs_co; valid_samples[0]++; }
-        if (current_rs_no2 > 0) { r0_sum.no2 += current_rs_no2; valid_samples[1]++; }
-        if (current_rs_c2h5oh > 0) { r0_sum.c2h5oh += current_rs_c2h5oh; valid_samples[2]++; }
-        if (current_rs_voc > 0) { r0_sum.voc += current_rs_voc; valid_samples[3]++; }
-
-        currentState.calibrationProgress = 20 + (int)((float)(i + 1) / CALIBRATION_SAMPLE_COUNT * 80.0f);
-        currentState.measuredR0.co = (valid_samples[0] > 0) ? (r0_sum.co / valid_samples[0]) : NAN;
-        currentState.measuredR0.no2 = (valid_samples[1] > 0) ? (r0_sum.no2 / valid_samples[1]) : NAN;
-        currentState.measuredR0.c2h5oh = (valid_samples[2] > 0) ? (r0_sum.c2h5oh / valid_samples[2]) : NAN;
-        currentState.measuredR0.voc = (valid_samples[3] > 0) ? (r0_sum.voc / valid_samples[3]) : NAN;
-        
-        sendCalibrationStatusToClients();
-        vTaskDelay(pdMS_TO_TICKS(CALIBRATION_SAMPLE_INTERVAL_MS));
-    }
-
-    P_PRINTLN("[CAL_TASK] 数据采集完成，正在计算并保存...");
-
-    bool success = false;
-    if (valid_samples[0] > 0) { currentConfig.r0Values.co = r0_sum.co / valid_samples[0]; success = true; }
-    if (valid_samples[1] > 0) { currentConfig.r0Values.no2 = r0_sum.no2 / valid_samples[1]; success = true; }
-    if (valid_samples[2] > 0) { currentConfig.r0Values.c2h5oh = r0_sum.c2h5oh / valid_samples[2]; success = true; }
-    if (valid_samples[3] > 0) { currentConfig.r0Values.voc = r0_sum.voc / valid_samples[3]; success = true; }
-
-    if (success) {
-        saveConfig(currentConfig);
-        currentState.calibrationState = CAL_COMPLETED;
-        P_PRINTLN("[CAL_TASK] 校准成功并已保存。");
-        P_PRINTF("  新R0值 - CO: %.2f, NO2: %.2f, C2H5OH: %.2f, VOC: %.2f\n",
-           currentConfig.r0Values.co, currentConfig.r0Values.no2,
-           currentConfig.r0Values.c2h5oh, currentConfig.r0Values.voc);
-    } else {
-        currentState.calibrationState = CAL_FAILED;
-        P_PRINTLN("[CAL_TASK] 校准失败，没有有效的采样数据。");
-    }
-    
-    sendCalibrationStatusToClients(); 
-
-    if (success) {
-        P_PRINTLN("[CAL_TASK] 3秒后设备将重启以应用新校准值...");
-        vTaskDelay(pdMS_TO_TICKS(3000));
-        ESP.restart();
-    }
-    
-    // 校准流程结束 (无论成功失败)，将状态重置为IDLE
-    currentState.calibrationState = CAL_IDLE;
-    
-    // --- 任务结束，删除自身 ---
-    P_PRINTLN("[CAL_TASK] 校准流程结束, 正在删除任务...");
-    calibrationTaskHandle = NULL; // 清除全局句柄，以便下次可以重新创建任务
-    vTaskDelete(NULL); // 使用 NULL 参数删除任务自身
 }

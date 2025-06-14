@@ -31,11 +31,13 @@ void initWiFiAndWebServer(DeviceConfig& config, WifiState& wifiStatus);
 void configureWebServer();
 void setupWebSocketActions();
 void handleCaptivePortal(AsyncWebServerRequest* request);
-void initWebSocketTask(); // <-- 新增: 初始化WebSocket后台任务
+
 
 // -- 循环处理 --
 void network_loop();
-void webSocketLoopTask(void* pvParameters); // <-- 新增: WebSocket后台任务函数
+void processWiFiConnection(WifiState& wifiStatus, DeviceConfig& config);
+void processWifiScanResults(WifiState& wifiStatus);
+void attemptNtpSync();
 
 // -- WebSocket 事件处理 --
 void onWebSocketEvent(uint8_t clientNum, WStype_t type, uint8_t * payload, size_t length);
@@ -46,7 +48,7 @@ void sendSensorDataToClients(const DeviceState& state, uint8_t specificClientNum
 void sendWifiStatusToClients(const WifiState& currentWifiState, uint8_t specificClientNum = 255);
 void sendHistoricalDataToClient(uint8_t clientNum, const CircularBuffer& histBuffer);
 void sendCurrentSettingsToClient(uint8_t clientNum, const DeviceConfig& config);
-void sendCalibrationStatusToClients(uint8_t specificClientNum = 255);
+void sendCalibrationStatusToClients(uint8_t specificClientNum = 255); // 新增: 发送校准状态
 
 
 #endif // WEB_HANDLER_H
