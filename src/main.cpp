@@ -8,7 +8,7 @@
 #include "data_manager.h"
 #include "sensor_handler.h"
 #include "web_handler.h"
-#include "onenet_handler.h" // <-- 1. 包含新的OneNET头文件
+#include "onenet_handler.h" // 包含OneNET头文件
 
 // ==========================================================================
 // == Arduino `setup()` 函数 ==
@@ -36,7 +36,7 @@ void setup() {
     // 设置气体传感器预热结束时间
     gasSensorWarmupEndTime = millis() + GAS_SENSOR_WARMUP_PERIOD_MS;
 
-    // 新增: 创建用于校准的信号量和任务
+    // 创建用于校准的信号量和任务
     calibrationSemaphore = xSemaphoreCreateBinary();
     if (calibrationSemaphore != NULL) {
         P_PRINTLN("[SETUP] 校准信号量创建成功。");
@@ -54,7 +54,7 @@ void setup() {
         P_PRINTLN("[SETUP] ***错误*** 校准信号量创建失败！");
     }
 
-    // <-- 2. 初始化并启动OneNET MQTT任务 -->
+    // 初始化并启动OneNET MQTT任务
     initOneNetMqttTask();
     
     P_PRINTLN("[SETUP] 初始化完成, 系统运行中.");
